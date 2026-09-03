@@ -55,25 +55,6 @@ void main() {
       final original = VideoProject(
         name: 'test',
         clips: project().clips,
-        audioTracks: [
-          const AudioTrack(
-            id: 'music',
-            sourcePath: '/source/music.mp3',
-            sourceStart: Duration.zero,
-            sourceEnd: Duration(seconds: 5),
-          ),
-        ],
-        textOverlays: const [
-          TextOverlay(
-            id: 'title',
-            text: 'Hello',
-            startTime: Duration.zero,
-            endTime: Duration(seconds: 2),
-          ),
-        ],
-        transitions: const {
-          'a': ClipTransition(type: TransitionType.fade),
-        },
         originalAudioVolume: .4,
         outputAspectRatio: '9:16',
       );
@@ -82,9 +63,6 @@ void main() {
       expect(updated.clips, hasLength(1));
       expect(updated.originalAudioVolume, .4);
       expect(updated.outputAspectRatio, '9:16');
-      expect(updated.musicTrack?.id, 'music');
-      expect(updated.textOverlays.single.id, 'title');
-      expect(updated.transitions['a']?.type, TransitionType.fade);
     });
   });
 

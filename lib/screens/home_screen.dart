@@ -136,10 +136,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   label: 'Audio',
                   value: info.hasAudio ? 'Included' : 'No audio track',
                 ),
-                _ImportDetail(
-                  label: 'File size',
-                  value: _formatFileSize(size),
-                ),
+                _ImportDetail(label: 'File size', value: _formatFileSize(size)),
                 const SizedBox(height: 12),
                 const Text(
                   'A local draft copy will be created so you can resume this '
