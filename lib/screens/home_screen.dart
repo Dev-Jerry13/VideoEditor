@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import '../core/theme/app_theme.dart';
 import '../core/utils/time_utils.dart';
+import '../services/ffmpeg_service.dart';
 import '../services/session_service.dart';
 import '../state/editor_state.dart';
 import 'editor_screen.dart';
@@ -51,6 +52,16 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
+    final info = await state.inspectVideoFile(path);
+    if (info == null) {
+      _showError(messenger, state.projectError ?? 'Could not inspect video.');
+      return;
+    }
+    if (!context.mounted ||
+        !await _confirmImport(context, path: path, info: info)) {
+      return;
+    }
+
     final opened = await state.openVideo(path);
     if (opened) {
       await navigator.push(EditorScreen.route());
@@ -78,6 +89,79 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _showError(ScaffoldMessengerState messenger, String message) {
     messenger.showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<bool> _confirmImport(
+    BuildContext context, {
+    required String path,
+    required MediaInfo info,
+  }) async {
+    final int size;
+    try {
+      size = await File(path).length();
+    } on FileSystemException {
+      if (context.mounted) {
+        _showError(
+          ScaffoldMessenger.of(context),
+          'The selected file is no longer available.',
+        );
+      }
+      return false;
+    }
+    if (!context.mounted) return false;
+    return await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Ready to edit?'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  path.split(Platform.pathSeparator).last,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                const SizedBox(height: 16),
+                _ImportDetail(
+                  label: 'Duration',
+                  value: formatClock(info.duration),
+                ),
+                _ImportDetail(
+                  label: 'Resolution',
+                  value: '${info.width} × ${info.height}',
+                ),
+                _ImportDetail(
+                  label: 'Audio',
+                  value: info.hasAudio ? 'Included' : 'No audio track',
+                ),
+                _ImportDetail(label: 'File size', value: _formatFileSize(size)),
+                const SizedBox(height: 12),
+                const Text(
+                  'A local draft copy will be created so you can resume this '
+                  'edit later.',
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('Choose another'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('Open editor'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
+
+  String _formatFileSize(int bytes) {
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).round()} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
   @override
@@ -122,7 +206,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Trim and export your videos,\nright on your device.',
+                    'Create multi-clip videos with trims, music, text,\n'
+                    'transitions, and on-device export.',
                     textAlign: TextAlign.center,
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       color: Theme.of(
@@ -138,6 +223,19 @@ class _HomeScreenState extends State<HomeScreen> {
                         : () => _pick(context),
                     icon: const Icon(Icons.video_library_rounded),
                     label: const Text('Select Video'),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Start with an MP4 or MOV video. Your edits are saved '
+                    'on this device as a draft.',
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withValues(alpha: .55),
+                      height: 1.4,
+                    ),
                   ),
                   ValueListenableBuilder<List<SessionRecord>>(
                     valueListenable: state.recentSessions,
@@ -173,6 +271,24 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
+}
+
+class _ImportDetail extends StatelessWidget {
+  const _ImportDetail({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: 6),
+    child: Row(
+      children: [
+        SizedBox(width: 80, child: Text(label)),
+        Expanded(child: Text(value, textAlign: TextAlign.end)),
+      ],
+    ),
+  );
 }
 
 class _RecentSection extends StatelessWidget {

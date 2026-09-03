@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/theme/app_theme.dart';
 import '../core/utils/time_utils.dart';
@@ -9,11 +10,91 @@ import '../widgets/export_progress.dart';
 import '../widgets/video_preview.dart';
 import '../widgets/video_timeline.dart';
 
-class EditorScreen extends StatelessWidget {
+class EditorScreen extends StatefulWidget {
   const EditorScreen({super.key});
 
   static Route<void> route() {
     return MaterialPageRoute<void>(builder: (_) => const EditorScreen());
+  }
+
+  @override
+  State<EditorScreen> createState() => _EditorScreenState();
+}
+
+class _EditorScreenState extends State<EditorScreen> {
+  static const _guidancePreferenceKey = 'editor.guidanceSeen.v1';
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _showFirstUseGuidance(),
+    );
+  }
+
+  Future<void> _showFirstUseGuidance() async {
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      if (!mounted || preferences.getBool(_guidancePreferenceKey) == true) {
+        return;
+      }
+      await preferences.setBool(_guidancePreferenceKey, true);
+      if (mounted) await _showGuidance(context);
+    } catch (_) {
+      // Preference storage is non-essential; a missing platform channel must
+      // never prevent the editor from opening.
+    }
+  }
+
+  Future<void> _showGuidance(BuildContext context) => showDialog<void>(
+    context: context,
+    builder: (context) => AlertDialog(
+      icon: const Icon(Icons.tips_and_updates_outlined),
+      title: const Text('Quick editing guide'),
+      content: const Text(
+        '1. Tap a clip to select it.\n'
+        '2. Drag the playhead to seek; drag trim handles to set its range.\n'
+        '3. Long-press and drag a clip to reorder it.\n\n'
+        'Use Undo after any edit, then choose Export when your timeline is ready.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Got it'),
+        ),
+      ],
+    ),
+  );
+
+  Future<void> _renameProject(BuildContext context) async {
+    final state = context.read<EditorState>();
+    final controller = TextEditingController(text: state.projectName);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Rename project'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 60,
+          textInputAction: TextInputAction.done,
+          onSubmitted: (value) => Navigator.of(context).pop(value),
+          decoration: const InputDecoration(labelText: 'Project name'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(controller.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (name != null && context.mounted) state.renameProject(name);
   }
 
   @override
@@ -37,8 +118,25 @@ class EditorScreen extends StatelessWidget {
       child: _ActionErrorSnackbars(
         child: Scaffold(
           appBar: AppBar(
-            title: const Text('Video Editor'),
+            title: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(context.select((EditorState s) => s.projectName)),
+                if (context.select((EditorState s) => s.isSavingProject))
+                  const Text('Saving…', style: TextStyle(fontSize: 11)),
+              ],
+            ),
             actions: [
+              IconButton(
+                icon: const Icon(Icons.edit_outlined),
+                tooltip: 'Rename project',
+                onPressed: () => _renameProject(context),
+              ),
+              IconButton(
+                icon: const Icon(Icons.help_outline_rounded),
+                tooltip: 'Editing help',
+                onPressed: () => _showGuidance(context),
+              ),
               Builder(
                 builder: (context) {
                   final hasProject =
