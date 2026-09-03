@@ -152,7 +152,7 @@ class EditorToolbar extends StatelessWidget {
                       index + 1 < state.project!.clips.length;
                   return _ToolButton(
                     icon: Icons.merge_rounded,
-                    label: 'Transit.',
+                    label: 'Transition',
                     enabled: hasProject && !busy && canTransition,
                     onTap: () => showTransitionSheet(context),
                   );
@@ -223,43 +223,48 @@ class _ToolButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
 
-    return Opacity(
-      opacity: enabled ? 1 : .38,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(14),
-        onTap: enabled
-            ? (onTap ??
-                () => ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Coming in a later update.'),
-                        duration: Duration(milliseconds: 900),
-                      ),
-                    ))
-            : null,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 52,
-                height: 52,
-                decoration: BoxDecoration(
-                  color: AppTheme.surfaceRaised,
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: Colors.white.withValues(alpha: .05)),
+    return Tooltip(
+      message: label,
+      child: Opacity(
+        opacity: enabled ? 1 : .38,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: enabled
+              ? (onTap ??
+                    () => ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Coming in a later update.'),
+                            duration: Duration(milliseconds: 900),
+                          ),
+                        ))
+              : null,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 52,
+                  height: 52,
+                  decoration: BoxDecoration(
+                    color: AppTheme.surfaceRaised,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: .05),
+                    ),
+                  ),
+                  child: Icon(icon, color: AppTheme.accent, size: 24),
                 ),
-                child: Icon(icon, color: AppTheme.accent, size: 24),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 11,
-                  color: scheme.onSurface.withValues(alpha: .8),
+                const SizedBox(height: 6),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: scheme.onSurface.withValues(alpha: .8),
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

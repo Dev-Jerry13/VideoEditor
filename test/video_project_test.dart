@@ -40,6 +40,31 @@ void main() {
     });
   });
 
+  group('project metadata preservation', () {
+    test('renamed changes only the project name', () {
+      final original = project();
+      final renamed = original.renamed('Weekend edit');
+
+      expect(renamed.name, 'Weekend edit');
+      expect(renamed.clips, original.clips);
+      expect(renamed.totalDuration, original.totalDuration);
+    });
+
+    test('withClips preserves project-level editing settings', () {
+      final original = VideoProject(
+        name: 'test',
+        clips: project().clips,
+        originalAudioVolume: .4,
+        outputAspectRatio: '9:16',
+      );
+      final updated = original.withClips([original.clips.first]);
+
+      expect(updated.clips, hasLength(1));
+      expect(updated.originalAudioVolume, .4);
+      expect(updated.outputAspectRatio, '9:16');
+    });
+  });
+
   group('clipAt (project position → clip + local offset)', () {
     test('resolves inside the first clip', () {
       final result = project().clipAt(const Duration(seconds: 3));
