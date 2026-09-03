@@ -36,6 +36,19 @@ class ClipTransition {
   /// clips can support so every consumer sees the same effective value.
   final Duration duration;
 
+  Map<String, dynamic> toJson() => {
+    'type': type.name,
+    'durationMs': duration.inMilliseconds,
+  };
+
+  static ClipTransition fromJson(Map<String, dynamic> json) => ClipTransition(
+    type: TransitionType.values.firstWhere(
+      (t) => t.name == json['type'],
+      orElse: () => TransitionType.none,
+    ),
+    duration: Duration(milliseconds: json['durationMs'] as int? ?? 0),
+  );
+
   bool get isActive => type != TransitionType.none;
 
   /// Effective overlap after clamping to the neighbours' capacity.
@@ -45,10 +58,7 @@ class ClipTransition {
     return duration > maxAllowed ? maxAllowed : duration;
   }
 
-  ClipTransition copyWith({
-    TransitionType? type,
-    Duration? duration,
-  }) {
+  ClipTransition copyWith({TransitionType? type, Duration? duration}) {
     return ClipTransition(
       type: type ?? this.type,
       duration: duration ?? this.duration,

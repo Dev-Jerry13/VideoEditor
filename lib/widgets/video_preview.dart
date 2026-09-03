@@ -6,11 +6,13 @@ import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 
 import '../core/theme/app_theme.dart';
+import '../core/utils/crop_math.dart';
 import '../core/utils/ffmpeg_filters.dart';
 import '../core/utils/time_utils.dart';
 import '../models/clip_transition.dart';
 import '../models/text_overlay.dart';
 import '../models/video_clip.dart';
+import '../models/video_transform.dart';
 import '../services/timeline_service.dart' show SegmentLayout;
 import '../state/editor_state.dart';
 
@@ -102,10 +104,10 @@ class VideoPreview extends StatelessWidget {
                           );
                         },
                       ),
-                      // Text overlays render in CANVAS space (export draws
-                      // them over the output W×H after scaling), so they sit
-                      // above every clip visual but inside the canvas rect.
-                      _TextOverlayLayer(state: state),
+                       // Text overlays render in CANVAS space (export draws
+                       // them over the output W×H after scaling), so they sit
+                       // above every clip visual but inside the canvas rect.
+                       _TextOverlayLayer(state: state),
                     ],
                   ),
                 ),
@@ -668,3 +670,5 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
     );
   }
 }
+
+

@@ -17,3 +17,12 @@ Duration clampDuration(Duration value, Duration min, Duration max) {
 
 String formatSeconds(Duration d) =>
     (d.inMicroseconds / Duration.microsecondsPerSecond).toStringAsFixed(3);
+
+/// Human-friendly relative time like "2 hours ago" / "just now".
+String timeAgo(DateTime time) {
+  final diff = DateTime.now().difference(time);
+  if (diff.inMinutes < 1) return 'just now';
+  if (diff.inHours < 1) return '${diff.inMinutes}m ago';
+  if (diff.inDays < 1) return '${diff.inHours}h ago';
+  return '${diff.inDays}d ago';
+}

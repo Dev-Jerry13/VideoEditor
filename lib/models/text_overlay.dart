@@ -37,10 +37,10 @@ class TextOverlay {
     this.bold = false,
     this.color = OverlayTextColor.white,
     this.background = true,
-  })  : assert(text.length > 0, 'text must not be empty'),
-        assert(x >= 0 && x <= 1, 'x must be normalized 0..1'),
-        assert(y >= 0 && y <= 1, 'y must be normalized 0..1'),
-        assert(endTime > startTime, 'overlay range must be positive');
+  }) : assert(text.length > 0, 'text must not be empty'),
+       assert(x >= 0 && x <= 1, 'x must be normalized 0..1'),
+       assert(y >= 0 && y <= 1, 'y must be normalized 0..1'),
+       assert(endTime > startTime, 'overlay range must be positive');
 
   /// Font size as a fraction of the video height.
   final double fontSize;
@@ -62,6 +62,53 @@ class TextOverlay {
   final bool bold;
   final OverlayTextColor color;
   final bool background;
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'text': text,
+    'fontSize': fontSize,
+    'x': x,
+    'y': y,
+    'startMs': startTime.inMilliseconds,
+    'endMs': endTime.inMilliseconds,
+    'alignment': alignment.index,
+    'bold': bold,
+    'color': color.hex,
+    'background': background,
+  };
+
+  static OverlayTextColor _colorFromHex(String? hex) {
+    if (hex == null) return OverlayTextColor.white;
+    for (final value in OverlayTextColor.values) {
+      if (value.hex == hex) return value;
+    }
+    return OverlayTextColor.white;
+  }
+
+  static TextOverlay fromJson(Map<String, dynamic> json) {
+    final startTime = Duration(milliseconds: json['startMs'] as int? ?? 0);
+    final endMs = json['endMs'] as int?;
+    final endTime = Duration(
+      milliseconds: endMs ?? startTime.inMilliseconds + 1000,
+    );
+    return TextOverlay(
+      id: json['id'] as String? ?? '',
+      text: json['text'] as String? ?? ' ',
+      fontSize:
+          (json['fontSize'] as num?)?.toDouble() ??
+          AppConstants.defaultTextFontSize,
+      x: (json['x'] as num?)?.toDouble() ?? 0.5,
+      y: (json['y'] as num?)?.toDouble() ?? 0.5,
+      startTime: startTime,
+      endTime: endTime,
+      alignment:
+          TextAlign.values[(json['alignment'] as int? ?? TextAlign.center.index)
+              .clamp(0, TextAlign.values.length - 1)],
+      bold: json['bold'] == true,
+      color: _colorFromHex(json['color'] as String?),
+      background: json['background'] != false,
+    );
+  }
 
   Duration get duration => endTime - startTime;
 

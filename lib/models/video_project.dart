@@ -67,10 +67,10 @@ class VideoProject {
     Map<String, ClipTransition> transitions = const {},
     this.originalAudioVolume = 1.0,
     this.outputAspectRatio,
-  })  : clips = List.of(clips),
-        audioTracks = List.of(audioTracks),
-        textOverlays = List.of(textOverlays),
-        transitions = Map.of(transitions);
+  }) : clips = List.of(clips),
+       audioTracks = List.of(audioTracks),
+       textOverlays = List.of(textOverlays),
+       transitions = Map.of(transitions);
 
   VideoProject._(
     this.name,
@@ -111,10 +111,47 @@ class VideoProject {
 
   /// Immutable instance → layout computed exactly once, then shared by
   /// all the hot paths (ticks, seeks, timeline painting).
-  late final TimelineLayout _layout =
-      TimelineService.resolve(clips, transitions);
+  late final TimelineLayout _layout = TimelineService.resolve(
+    clips,
+    transitions,
+  );
 
   TimelineLayout get layout => _layout;
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'clips': clips.map((c) => c.toJson()).toList(),
+    'audioTracks': audioTracks.map((a) => a.toJson()).toList(),
+    'textOverlays': textOverlays.map((o) => o.toJson()).toList(),
+    'transitions': transitions.map((k, v) => MapEntry(k, v.toJson())),
+    'originalAudioVolume': originalAudioVolume,
+    'outputAspectRatio': outputAspectRatio,
+  };
+
+  static VideoProject fromJson(Map<String, dynamic> json) => VideoProject(
+    name: json['name'] as String? ?? 'Project',
+    clips: (json['clips'] as List? ?? const [])
+        .whereType<Map>()
+        .map((m) => VideoClip.fromJson(m.cast<String, dynamic>()))
+        .toList(),
+    audioTracks: (json['audioTracks'] as List? ?? const [])
+        .whereType<Map>()
+        .map((m) => AudioTrack.fromJson(m.cast<String, dynamic>()))
+        .toList(),
+    textOverlays: (json['textOverlays'] as List? ?? const [])
+        .whereType<Map>()
+        .map((m) => TextOverlay.fromJson(m.cast<String, dynamic>()))
+        .toList(),
+    transitions: (json['transitions'] as Map? ?? const {}).map(
+      (k, v) => MapEntry(
+        k.toString(),
+        ClipTransition.fromJson((v as Map).cast<String, dynamic>()),
+      ),
+    ),
+    originalAudioVolume:
+        (json['originalAudioVolume'] as num?)?.toDouble() ?? 1.0,
+    outputAspectRatio: json['outputAspectRatio'] as String?,
+  );
 
   /// Sum of OUTPUT durations MINUS transition overlaps — the number every
   /// lane, the playhead and the export agree on.
@@ -124,8 +161,7 @@ class VideoProject {
 
   bool get isNotEmpty => clips.isNotEmpty;
 
-  AudioTrack? get musicTrack =>
-      audioTracks.isEmpty ? null : audioTracks.first;
+  AudioTrack? get musicTrack => audioTracks.isEmpty ? null : audioTracks.first;
 
   /// Resolves a position on the combined project timeline to the covering
   /// clip plus the offset within that clip. Positions past the end clamp
@@ -135,9 +171,11 @@ class VideoProject {
     final segment = _layout.segmentAt(position);
     return ClipAtPosition(
       clip: segment.clip,
-      localPosition:
-          clampDuration(position - segment.projectStart, Duration.zero,
-              segment.effectiveDuration),
+      localPosition: clampDuration(
+        position - segment.projectStart,
+        Duration.zero,
+        segment.effectiveDuration,
+      ),
     );
   }
 
@@ -154,8 +192,7 @@ class VideoProject {
   /// [clip]) — used to translate playhead positions into seek targets and
   /// split points. Independent of the layout: pure per-clip conversion.
   Duration sourceOffsetFor(VideoClip clip, Duration localOutput) {
-    final ratio =
-        clip.effectiveDuration.inMilliseconds <= 0 ? 0.0 : clip.speed;
+    final ratio = clip.effectiveDuration.inMilliseconds <= 0 ? 0.0 : clip.speed;
     final sourceLocal = localOutput * ratio;
     return clampDuration(
       clip.trimStart + sourceLocal,
@@ -290,13 +327,19 @@ class VideoProject {
       throw ClipOperationException('Clip not found.');
     }
     final clip = clips[index];
-    final newStart =
-        clampDuration(trimStart, Duration.zero, clip.sourceDuration);
+    final newStart = clampDuration(
+      trimStart,
+      Duration.zero,
+      clip.sourceDuration,
+    );
     final newEnd = clampDuration(trimEnd, Duration.zero, clip.sourceDuration);
     if (newEnd - newStart < minSegment) {
       throw const ClipOperationException('Trim range is too short.');
     }
-    return _withClip(index, clip.copyWith(trimStart: newStart, trimEnd: newEnd));
+    return _withClip(
+      index,
+      clip.copyWith(trimStart: newStart, trimEnd: newEnd),
+    );
   }
 
   /// Returns a copy with the clip's playback speed replaced. Speeds outside
@@ -332,13 +375,13 @@ class VideoProject {
   /// Restores crop/rotate/flip/filter/adjustments to defaults WITHOUT
   /// touching trim/speed/audio/text (plan §15).
   VideoProject resetVisuals(String clipId) => _mapClip(
-        clipId,
-        (c) => c.copyWith(
-          transform: VideoTransform.identity,
-          filter: VideoFilter.none,
-          adjustments: VideoAdjustments.neutral,
-        ),
-      );
+    clipId,
+    (c) => c.copyWith(
+      transform: VideoTransform.identity,
+      filter: VideoFilter.none,
+      adjustments: VideoAdjustments.neutral,
+    ),
+  );
 
   /// Sets or clears the transition after [leftClipId]. Requires an existing
   /// successor. Stored raw — [TimelineService] clamps on read so trimming a
@@ -402,9 +445,8 @@ class VideoProject {
     return _copyWithAudio(next);
   }
 
-  VideoProject withoutAudioTrack(String trackId) => _copyWithAudio(
-        List.of(audioTracks)..removeWhere((t) => t.id == trackId),
-      );
+  VideoProject withoutAudioTrack(String trackId) =>
+      _copyWithAudio(List.of(audioTracks)..removeWhere((t) => t.id == trackId));
 
   VideoProject withOriginalAudioVolume(double volume) {
     final clamped = volume.clamp(0.0, AppConstants.maxAudioVolume);
@@ -432,32 +474,32 @@ class VideoProject {
   }
 
   VideoProject withoutTextOverlay(String overlayId) => _copyWithText(
-        List.of(textOverlays)..removeWhere((o) => o.id == overlayId),
-      );
+    List.of(textOverlays)..removeWhere((o) => o.id == overlayId),
+  );
 
   /// Appends [clips] to the end of the sequence, preserving every other
   /// project property.
   VideoProject appended(List<VideoClip> newClips) => VideoProject._(
-        name,
-        [...clips, ...newClips],
-        audioTracks,
-        textOverlays,
-        transitions,
-        originalAudioVolume,
-        outputAspectRatio,
-      );
+    name,
+    [...clips, ...newClips],
+    audioTracks,
+    textOverlays,
+    transitions,
+    originalAudioVolume,
+    outputAspectRatio,
+  );
 
   /// Shallow copy sharing clip instances (they are immutable); every list
   /// is freshly allocated so snapshots compare by identity.
   VideoProject copy() => VideoProject(
-        name: name,
-        clips: clips,
-        audioTracks: audioTracks,
-        textOverlays: textOverlays,
-        transitions: transitions,
-        originalAudioVolume: originalAudioVolume,
-        outputAspectRatio: outputAspectRatio,
-      );
+    name: name,
+    clips: clips,
+    audioTracks: audioTracks,
+    textOverlays: textOverlays,
+    transitions: transitions,
+    originalAudioVolume: originalAudioVolume,
+    outputAspectRatio: outputAspectRatio,
+  );
 
   // -- Internal constructors ---------------------------------------------------
 
@@ -470,14 +512,14 @@ class VideoProject {
   }
 
   VideoProject _withClip(int index, VideoClip updated) => VideoProject._(
-        name,
-        List.of(clips)..[index] = updated,
-        audioTracks,
-        textOverlays,
-        transitions,
-        originalAudioVolume,
-        outputAspectRatio,
-      );
+    name,
+    List.of(clips)..[index] = updated,
+    audioTracks,
+    textOverlays,
+    transitions,
+    originalAudioVolume,
+    outputAspectRatio,
+  );
 
   VideoProject _replaceRange(int start, int end, List<VideoClip> replacement) {
     final order = List.of(clips)..replaceRange(start, end, replacement);
@@ -493,22 +535,22 @@ class VideoProject {
   }
 
   VideoProject _copyWithAudio(List<AudioTrack> tracks) => VideoProject._(
-        name,
-        clips,
-        tracks,
-        textOverlays,
-        transitions,
-        originalAudioVolume,
-        outputAspectRatio,
-      );
+    name,
+    clips,
+    tracks,
+    textOverlays,
+    transitions,
+    originalAudioVolume,
+    outputAspectRatio,
+  );
 
   VideoProject _copyWithText(List<TextOverlay> overlays) => VideoProject._(
-        name,
-        clips,
-        audioTracks,
-        overlays,
-        transitions,
-        originalAudioVolume,
-        outputAspectRatio,
-      );
+    name,
+    clips,
+    audioTracks,
+    overlays,
+    transitions,
+    originalAudioVolume,
+    outputAspectRatio,
+  );
 }

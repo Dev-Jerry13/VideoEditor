@@ -14,4 +14,13 @@ enum VideoFilter {
   const VideoFilter(this.label);
 
   final String label;
+
+  String get code => name;
+
+  static VideoFilter fromCode(String? code) {
+    for (final value in VideoFilter.values) {
+      if (value.name == code) return value;
+    }
+    return VideoFilter.none;
+  }
 }

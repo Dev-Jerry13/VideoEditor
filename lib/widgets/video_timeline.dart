@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../core/theme/app_theme.dart';
 import '../core/utils/time_utils.dart';
 import '../models/video_clip.dart';
+import '../services/timeline_service.dart';
 import '../state/editor_state.dart';
 import 'audio_lane.dart';
 import 'text_lane.dart';
@@ -84,9 +85,22 @@ class VideoTimeline extends StatelessWidget {
                                   : position.inMilliseconds / totalMs;
                               final x =
                                   (fraction * width).clamp(0.0, width);
+                              final playing = state.isPlaying;
                               return Stack(
                                 clipBehavior: Clip.none,
                                 children: [
+                                  Positioned(
+                                    left: 0,
+                                    top: 0,
+                                    bottom: 0,
+                                    width: x,
+                                    child: Container(
+                                      decoration: BoxDecoration(
+                                        color: AppTheme.accent.withValues(alpha: playing ? 0.2 : 0.1),
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                    ),
+                                  ),
                                   Positioned(
                                     left: x - 1.5,
                                     top: 0,
@@ -94,13 +108,13 @@ class VideoTimeline extends StatelessWidget {
                                     width: 3,
                                     child: Container(
                                       decoration: BoxDecoration(
-                                        color: Colors.white,
+                                        color: playing ? AppTheme.accent : Colors.white,
                                         borderRadius:
                                             BorderRadius.circular(2),
-                                        boxShadow: const [
+                                        boxShadow: [
                                           BoxShadow(
-                                            blurRadius: 4,
-                                            color: Colors.black54,
+                                            blurRadius: playing ? 6 : 4,
+                                            color: playing ? AppTheme.accent.withValues(alpha: .7) : Colors.black54,
                                           ),
                                         ],
                                       ),
@@ -112,9 +126,20 @@ class VideoTimeline extends StatelessWidget {
                                     child: Container(
                                       width: 14,
                                       height: 14,
-                                      decoration: const BoxDecoration(
-                                        color: Colors.white,
+                                      decoration: BoxDecoration(
+                                        color: playing ? AppTheme.accent : Colors.white,
                                         shape: BoxShape.circle,
+                                        border: playing
+                                            ? Border.all(color: Colors.white, width: 2)
+                                            : null,
+                                        boxShadow: playing
+                                            ? [
+                                                BoxShadow(
+                                                  blurRadius: 4,
+                                                  color: AppTheme.accent.withValues(alpha: .8),
+                                                ),
+                                              ]
+                                            : null,
                                       ),
                                     ),
                                   ),
@@ -220,11 +245,14 @@ class _TimelineBodyState extends State<_TimelineBody> {
     if (_busy || clips.length < 2 || _reordering) return;
 
     final x = details.localPosition.dx;
-    var acc = 0.0;
+    final layout = TimelineService.resolve(clips, widget.state.project?.transitions ?? {});
     var index = clips.length - 1;
-    for (var i = 0; i < clips.length; i++) {
-      acc += _fractionOf(clips[i]) * widget.width;
-      if (x <= acc) {
+    for (var i = 0; i < layout.segments.length; i++) {
+      final seg = layout.segments[i];
+      final totalMs = layout.totalDuration.inMilliseconds.toDouble();
+      final start = totalMs <= 0 ? 0.0 : (seg.projectStart.inMilliseconds / totalMs) * widget.width;
+      final end = totalMs <= 0 ? widget.width : start + (seg.effectiveDuration.inMilliseconds / totalMs) * widget.width;
+      if (x <= end) {
         index = i;
         break;
       }
@@ -242,17 +270,19 @@ class _TimelineBodyState extends State<_TimelineBody> {
   void _updateReorder(LongPressMoveUpdateDetails details) {
     if (!_reordering) return;
     final order = _dragOrder!;
+    final layout = TimelineService.resolve(order, widget.state.project?.transitions ?? {});
     final x = (details.localPosition.dx).clamp(0.0, widget.width);
 
-    var acc = 0.0;
     var slot = order.length;
-    for (var i = 0; i < order.length; i++) {
-      final w = _fractionOf(order[i]) * widget.width;
-      if (x < acc + w) {
-        slot = x - acc < w / 2 ? i : i + 1;
+    final totalMs = layout.totalDuration.inMilliseconds.toDouble();
+    for (var i = 0; i < layout.segments.length; i++) {
+      final seg = layout.segments[i];
+      final start = totalMs <= 0 ? 0.0 : (seg.projectStart.inMilliseconds / totalMs) * widget.width;
+      final w = totalMs <= 0 ? widget.width : (seg.effectiveDuration.inMilliseconds / totalMs) * widget.width;
+      if (x < start + w) {
+        slot = x - start < w / 2 ? i : i + 1;
         break;
       }
-      acc += w;
     }
 
     if (slot == _dragSlot) return;
@@ -286,61 +316,54 @@ class _TimelineBodyState extends State<_TimelineBody> {
 
   // -- Build --------------------------------------------------------------------
 
-  double _fractionOf(VideoClip clip) {
-    final totalMs = _totalMs;
-    if (totalMs <= 0) return 0;
-    // OUTPUT duration: speed shrinks/grows the block on the timeline.
-    return clip.effectiveDuration.inMilliseconds / totalMs;
-  }
-
-  /// Cumulative flex fraction after [count] clips — matches the Expanded
-  /// flex weights used by the block row, so markers land exactly on the
-  /// rendered seam between two blocks.
-  double fractionOfSeam(List<VideoClip> clips, int count) {
-    var acc = 0;
-    var total = 0;
-    for (var i = 0; i < clips.length; i++) {
-      final ms = clips[i].effectiveDuration.inMilliseconds;
-      final w = ms < 1 ? 1 : ms;
-      if (i < count) acc += w;
-      total += w;
-    }
-    return total <= 0 ? 0 : acc / total;
+  double fractionOfSeam(TimelineLayout layout, int index) {
+    final totalMs = layout.totalDuration.inMilliseconds.toDouble();
+    if (totalMs <= 0 || index < 0 || index >= layout.segments.length) return 0;
+    return (layout.segments[index].seam.inMilliseconds / totalMs).clamp(0.0, 1.0);
   }
 
   @override
   Widget build(BuildContext context) {
     final state = widget.state;
     final order = _reordering ? _dragOrder! : state.clips;
+    final layout = _reordering
+        ? TimelineService.resolve(order, state.project?.transitions ?? {})
+        : (state.project?.layout ?? TimelineLayout(segments: const [], totalDuration: Duration.zero));
     final selected = state.selectedClip;
     final busy = _busy;
+    final totalMs = layout.totalDuration.inMilliseconds.toDouble();
 
     return Stack(
       clipBehavior: Clip.none,
       children: [
-        // Clip blocks
+        // Clip blocks positioned via layout (supporting transition overlaps)
         Positioned.fill(
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+          child: Stack(
+            clipBehavior: Clip.none,
             children: [
-              for (var i = 0; i < order.length; i++)
-                Expanded(
-                  flex: order[i].effectiveDuration.inMilliseconds < 1
-                      ? 1
-                      : order[i].effectiveDuration.inMilliseconds,
-                  child: ValueListenableBuilder<Map<String, List<String>>>(
-                    valueListenable: state.thumbnailStrips,
-                    builder: (context, strips, _) => TimelineClipBlock(
-                      key: ValueKey(order[i].id),
-                      clip: order[i],
-                      index: state.clips.indexOf(order[i]),
-                      selected:
-                          !_reordering && order[i].id == selected?.id,
-                      thumbnails: strips[order[i].sourcePath] ?? const [],
-                      dragging: _reordering && i == _dragCurrent,
+              for (var i = 0; i < layout.segments.length; i++)
+                () {
+                  final seg = layout.segments[i];
+                  final left = totalMs <= 0 ? 0.0 : (seg.projectStart.inMilliseconds / totalMs).clamp(0.0, 1.0) * widget.width;
+                  final w = totalMs <= 0 ? widget.width : (seg.effectiveDuration.inMilliseconds / totalMs).clamp(0.0, 1.0) * widget.width;
+                  return Positioned(
+                    left: left,
+                    width: w,
+                    top: 0,
+                    bottom: 0,
+                    child: ValueListenableBuilder<Map<String, List<String>>>(
+                      valueListenable: state.thumbnailStrips,
+                      builder: (context, strips, _) => TimelineClipBlock(
+                        key: ValueKey(seg.clip.id),
+                        clip: seg.clip,
+                        index: state.clips.indexOf(seg.clip),
+                        selected: !_reordering && seg.clip.id == selected?.id,
+                        thumbnails: strips[seg.clip.sourcePath] ?? const [],
+                        dragging: _reordering && i == _dragCurrent,
+                      ),
                     ),
-                  ),
-                ),
+                  );
+                }(),
             ],
           ),
         ),
@@ -399,14 +422,13 @@ class _TimelineBodyState extends State<_TimelineBody> {
 
         // Transition markers sit ABOVE the scrub layer so their taps open
         // the transition sheet instead of scrubbing.
-        if (!busy && !_reordering) ...[
-          for (var i = 0; i < order.length - 1; i++)
+        if (!busy && !_reordering && state.project != null) ...[
+          for (var i = 0; i < state.project!.layout.segments.length - 1; i++)
             if ((state.transitionAfter(order[i].id)?.isActive ?? false) &&
-                (state.project?.layout.segments[i].overlapAfter ??
-                        Duration.zero) >
+                state.project!.layout.segments[i].overlapAfter >
                     Duration.zero)
               Positioned(
-                left: (fractionOfSeam(order, i + 1) * widget.width - 26)
+                left: (fractionOfSeam(state.project!.layout, i) * widget.width - 26)
                     .clamp(0.0, (widget.width - 52).clamp(0.0, double.infinity)),
                 top: 2,
                 child: TransitionMarker(
@@ -445,12 +467,16 @@ class _TimelineBodyState extends State<_TimelineBody> {
   double _selectedEdgeFraction(EditorState state, {required bool isStart}) {
     final selected = state.selectedClip;
     if (selected == null) return 0;
-    // End edge sits after the clip's OUTPUT footprint on the timeline.
-    final edge = isStart
-        ? state.selectedClipStart
-        : state.selectedClipStart + selected.effectiveDuration;
-    final totalMs = _totalMs;
+    final layout = state.project?.layout;
+    if (layout == null) return 0;
+    final totalMs = layout.totalDuration.inMilliseconds.toDouble();
     if (totalMs <= 0) return 0;
+
+    final segIndex = state.selectedIndex;
+    if (segIndex < 0 || segIndex >= layout.segments.length) return 0;
+    final seg = layout.segments[segIndex];
+
+    final edge = isStart ? seg.projectStart : seg.coveredEnd;
     return (edge.inMilliseconds / totalMs).clamp(0.0, 1.0);
   }
 }

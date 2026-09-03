@@ -20,6 +20,7 @@ import '../services/export_service.dart';
 import '../services/ffmpeg_service.dart';
 import '../services/media_picker_service.dart';
 import '../services/save_destination_service.dart';
+import '../services/session_service.dart';
 import '../services/thumbnail_service.dart';
 import '../services/timeline_service.dart' show SegmentLayout;
 
@@ -37,12 +38,14 @@ enum ExportPhase { idle, exporting, success, failed }
 /// the moving playhead never rebuilds the rest of the editor.
 class EditorState extends ChangeNotifier {
   EditorState()
-      : _picker = MediaPickerService(),
-        _thumbnails = ThumbnailService(),
-        _ffmpeg = FFmpegService(),
-        _exporter = ExportService(),
-        _destinations = SaveDestinationService() {
+    : _picker = MediaPickerService(),
+      _thumbnails = ThumbnailService(),
+      _ffmpeg = FFmpegService(),
+      _exporter = ExportService(),
+      _destinations = SaveDestinationService(),
+      _sessions = SessionService() {
     unawaited(_loadSaveSettings());
+    unawaited(_initSessions());
   }
 
   final MediaPickerService _picker;
@@ -50,6 +53,25 @@ class EditorState extends ChangeNotifier {
   final FFmpegService _ffmpeg;
   final ExportService _exporter;
   final SaveDestinationService _destinations;
+  final SessionService _sessions;
+
+  /// Id of the session backing the current project (null before any video
+  /// is opened). Below it, media copies and project.json are stored.
+  String? _sessionId;
+  String? _posterPath;
+
+  /// Most-recently-used sessions, newest first (drafts only). Pruned on a
+  /// 2-day cadence.
+  final ValueNotifier<List<SessionRecord>> recentSessions = ValueNotifier(
+    const [],
+  );
+
+  bool isRestoring = false;
+
+  /// Debounces the autosave so rapid edits don't hammer the disk.
+  Timer? _autosaveTimer;
+  Future<void>? _autosaveInFlight;
+  bool _disposed = false;
 
   /// Hidden second player used for background-music preview. Created
   /// lazily for the current music source and torn down whenever the track
@@ -109,6 +131,25 @@ class EditorState extends ChangeNotifier {
   /// active controller listener. Widgets listen here instead of rebuilding
   /// the whole editor per frame.
   final ValueNotifier<Duration> playbackPosition = ValueNotifier(Duration.zero);
+
+  bool _lastPlaying = false;
+  Timer? _playbackTimer;
+
+  void _startPlaybackTimer() {
+    _playbackTimer?.cancel();
+    _playbackTimer = Timer.periodic(const Duration(milliseconds: 33), (_) {
+      if (_activeController?.value.isPlaying ?? false) {
+        _onControllerTick();
+      } else {
+        _stopPlaybackTimer();
+      }
+    });
+  }
+
+  void _stopPlaybackTimer() {
+    _playbackTimer?.cancel();
+    _playbackTimer = null;
+  }
 
   ExportPhase exportPhase = ExportPhase.idle;
   String? exportError;
@@ -183,6 +224,7 @@ class EditorState extends ChangeNotifier {
     }
     _redoStack.clear();
     _project = updated;
+    _scheduleAutosave();
   }
 
   void undo() {
@@ -219,8 +261,11 @@ class EditorState extends ChangeNotifier {
   VideoProject? get project => _project;
   List<VideoClip> get clips => _project?.clips ?? const [];
   bool get hasProject =>
-      _project != null && _project!.clips.isNotEmpty && _activeController != null;
-  bool get isVideoInitialized => _activeController?.value.isInitialized ?? false;
+      _project != null &&
+      _project!.clips.isNotEmpty &&
+      _activeController != null;
+  bool get isVideoInitialized =>
+      _activeController?.value.isInitialized ?? false;
   bool get isPlaying => _activeController?.value.isPlaying ?? false;
   Duration get totalDuration => _project?.totalDuration ?? Duration.zero;
 
@@ -252,8 +297,7 @@ class EditorState extends ChangeNotifier {
   Duration get trimEnd => selectedClip?.trimEnd ?? Duration.zero;
 
   /// Source duration of the selected clip; bounds trim UI sliders.
-  Duration get sourceDuration =>
-      selectedClip?.sourceDuration ?? Duration.zero;
+  Duration get sourceDuration => selectedClip?.sourceDuration ?? Duration.zero;
 
   // -- Project lifecycle -------------------------------------------------------
 
@@ -276,26 +320,44 @@ class EditorState extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final info = await _ffmpeg.probe(path);
+      final id = 'proj_${DateTime.now().microsecondsSinceEpoch}';
+      // Copy the picked source into app storage so the saved session keeps
+      // a valid file for up to two days, even if the original moves.
+      final storedPath = await _sessions.storeMedia(id, path);
+
+      final info = await _ffmpeg.probe(storedPath);
       final clip = VideoClip(
         id: ClipId.next(),
-        sourcePath: path,
+        sourcePath: storedPath,
         sourceDuration: info.duration,
       );
       _project = VideoProject(name: 'Project', clips: [clip]);
       _selectedClipId = clip.id;
       _undoStack.clear();
       _redoStack.clear();
+      _sessionId = id;
+      _posterPath = null;
 
-      await _activateController(path, clipId: clip.id, seekTarget: Duration.zero);
+      await _activateController(
+        storedPath,
+        clipId: clip.id,
+        seekTarget: Duration.zero,
+      );
       if (_activeController == null) {
         throw const MediaFormatException(
-            'This video could not be opened. The file may be corrupted.');
+          'This video could not be opened. The file may be corrupted.',
+        );
       }
+
+      unawaited(_generatePoster(storedPath, info.duration));
 
       isLoadingProject = false;
       notifyListeners();
-      unawaited(_loadThumbnailsFor(path, info.duration));
+      unawaited(_loadThumbnailsFor(storedPath, info.duration));
+      unawaited(_refreshRecent());
+      // Persist right away so a freshly picked (still unedited) video is
+      // resumable even if the app is killed before the first edit.
+      _scheduleAutosave();
       return true;
     } on AppException catch (e) {
       projectError = e.userMessage;
@@ -324,8 +386,14 @@ class EditorState extends ChangeNotifier {
     }
     if (path == null) return false; // user cancelled the picker
 
-    if (_playerPool.containsKey(path) ||
-        _project!.clips.any((c) => c.sourcePath == path)) {
+    // Reject duplicates BEFORE copying: the prospective media path is what
+    // any existing clip would have claimed, so a file already on the
+    // timeline can never be added a second time.
+    final id = _sessionId;
+    if (id == null) return false;
+    final prospective = await _sessions.primaryMediaPath(id, path);
+    if (_playerPool.containsKey(prospective) ||
+        _project!.clips.any((c) => c.sourcePath == prospective)) {
       actionError = 'That video is already part of the timeline.';
       notifyListeners();
       return false;
@@ -334,10 +402,14 @@ class EditorState extends ChangeNotifier {
     isLoadingProject = true;
     notifyListeners();
     try {
-      final info = await _ffmpeg.probe(path);
+      // Copy the added source into the session media folder so the saved
+      // project references a stable local file.
+      final storedPath = await _sessions.storeMedia(id, path);
+
+      final info = await _ffmpeg.probe(storedPath);
       final clip = VideoClip(
         id: ClipId.next(),
-        sourcePath: path,
+        sourcePath: storedPath,
         sourceDuration: info.duration,
       );
 
@@ -353,7 +425,8 @@ class EditorState extends ChangeNotifier {
 
       isLoadingProject = false;
       notifyListeners();
-      unawaited(_loadThumbnailsFor(path, info.duration));
+      unawaited(_loadThumbnailsFor(storedPath, info.duration));
+      _scheduleAutosave();
       return true;
     } on AppException catch (e) {
       actionError = e.userMessage;
@@ -367,6 +440,12 @@ class EditorState extends ChangeNotifier {
   }
 
   void closeProject() {
+    // Flush any pending edits before tearing the project down so the
+    // session file always matches what the user last saw.
+    _autosaveTimer?.cancel();
+    _autosaveTimer = null;
+    unawaited(_saveSessionNow());
+
     _movingPlayhead = false;
     _activeClipId = null;
     _selectedClipId = null;
@@ -387,6 +466,8 @@ class EditorState extends ChangeNotifier {
     _playerPool.clear();
     _pendingThumbSources.clear();
     _project = null;
+    _sessionId = null;
+    _posterPath = null;
     _undoStack.clear();
     _redoStack.clear();
     thumbnailStrips.value = const {};
@@ -409,8 +490,8 @@ class EditorState extends ChangeNotifier {
   // -- Thumbnails ---------------------------------------------------------------
 
   static int thumbnailCountFor(Duration duration) {
-    final byInterval = (duration.inMilliseconds / AppConstants.thumbnailIntervalMs)
-        .ceil();
+    final byInterval =
+        (duration.inMilliseconds / AppConstants.thumbnailIntervalMs).ceil();
     return byInterval.clamp(
       AppConstants.thumbnailMinPerSource,
       AppConstants.thumbnailMaxPerSource,
@@ -420,10 +501,7 @@ class EditorState extends ChangeNotifier {
   Future<void> _loadThumbnailsFor(String sourcePath, Duration duration) async {
     if (!_pendingThumbSources.add(sourcePath)) return;
 
-    thumbnailStrips.value = {
-      ...thumbnailStrips.value,
-      sourcePath: const [],
-    };
+    thumbnailStrips.value = {...thumbnailStrips.value, sourcePath: const []};
 
     // Frames stream in one by one so the filmstrip fills progressively.
     final accumulated = <String>[];
@@ -450,6 +528,18 @@ class EditorState extends ChangeNotifier {
       // Strip stays empty/partial; the timeline still works without frames.
     } finally {
       _pendingThumbSources.remove(sourcePath);
+    }
+  }
+
+  Future<void> _generatePoster(String videoPath, Duration duration) async {
+    final id = _sessionId;
+    if (id == null) return;
+    final poster = await _sessions.generatePoster(id, videoPath, duration);
+    if (poster != null && poster != _posterPath) {
+      _posterPath = poster;
+      // Persist the new thumbnail into the session index so the Recent
+      // tile reflects it even if the app is killed right after opening.
+      _scheduleAutosave();
     }
   }
 
@@ -560,6 +650,8 @@ class EditorState extends ChangeNotifier {
     if (controller != null) {
       await controller.play();
       if (controller.value.isPlaying) {
+        _lastPlaying = true;
+        _startPlaybackTimer();
         unawaited(_syncMusicWithPlayhead(playbackPosition.value, true));
       }
     }
@@ -567,8 +659,10 @@ class EditorState extends ChangeNotifier {
   }
 
   Future<void> pause() async {
+    _stopPlaybackTimer();
     await _activeController?.pause();
     _pauseMusic();
+    _lastPlaying = false;
     unawaited(_teardownIncoming());
     notifyListeners();
   }
@@ -611,13 +705,18 @@ class EditorState extends ChangeNotifier {
     // matches where the incoming clip was cued.
     await _teardownIncoming();
 
-    final clamped =
-        clampDuration(position, Duration.zero, project.totalDuration);
+    final clamped = clampDuration(
+      position,
+      Duration.zero,
+      project.totalDuration,
+    );
     final resolved = project.clipAt(clamped);
 
     // Project time -> OUTPUT-local offset -> absolute SOURCE timestamp.
-    final sourceTarget =
-        project.sourceOffsetFor(resolved.clip, resolved.localPosition);
+    final sourceTarget = project.sourceOffsetFor(
+      resolved.clip,
+      resolved.localPosition,
+    );
     final wasPlaying = _activeController?.value.isPlaying ?? false;
 
     final target = await _activateController(
@@ -655,7 +754,8 @@ class EditorState extends ChangeNotifier {
         await controller.initialize();
       } catch (_) {
         await controller.dispose();
-        actionError = 'This video could not be opened. '
+        actionError =
+            'This video could not be opened. '
             'The file may have been moved or deleted.';
         notifyListeners();
         return null;
@@ -715,6 +815,17 @@ class EditorState extends ChangeNotifier {
     if (controller == null || project == null || project.isEmpty) return;
     if (!identical(controller, _playerPool[controller.dataSource])) return;
 
+    final playing = controller.value.isPlaying;
+    if (playing) {
+      if (_playbackTimer == null || !_playbackTimer!.isActive) {
+        _startPlaybackTimer();
+      }
+    }
+    if (playing != _lastPlaying) {
+      _lastPlaying = playing;
+      notifyListeners();
+    }
+
     final clip = _clipById(_activeClipId);
     if (clip == null || clip.sourcePath != controller.dataSource) return;
 
@@ -723,10 +834,9 @@ class EditorState extends ChangeNotifier {
     // Advance to the next clip once the current one plays past its end.
     if (controller.value.isPlaying && sourcePosition >= clip.trimEnd) {
       final index = project.indexOf(clip.id);
-      final next =
-          index >= 0 && index + 1 < project.clips.length
-              ? project.clips[index + 1]
-              : null;
+      final next = index >= 0 && index + 1 < project.clips.length
+          ? project.clips[index + 1]
+          : null;
       if (next != null && _incomingClipId == next.id) {
         // Crossfade window just completed: the incoming clip is ALREADY
         // playing at the right spot — promote it instead of restarting it.
@@ -741,8 +851,11 @@ class EditorState extends ChangeNotifier {
       return;
     }
 
-    final localSource =
-        clampDuration(sourcePosition, Duration.zero, clip.trimmedDuration);
+    final localSource = clampDuration(
+      sourcePosition,
+      Duration.zero,
+      clip.trimmedDuration,
+    );
     // SOURCE position -> OUTPUT-local offset -> project time. Output runs
     // FASTER than source for speed > 1 (effectiveDuration = trimmed/speed),
     // so the conversion divides — the exact inverse of [sourceOffsetFor].
@@ -765,7 +878,8 @@ class EditorState extends ChangeNotifier {
     // drift INSIDE the window stays uncorrected until the next seek or
     // clip boundary.
     final track = project.musicTrack;
-    final insideWindow = track != null &&
+    final insideWindow =
+        track != null &&
         playbackPosition.value >= track.timelineStart &&
         playbackPosition.value < track.timelineStart + track.sourceDuration;
     if (insideWindow != _musicInsideWindow) {
@@ -789,13 +903,16 @@ class EditorState extends ChangeNotifier {
     VideoPlayerController controller,
     VideoClip clip,
   ) async {
+    _stopPlaybackTimer();
     await controller.pause();
     _pauseMusic();
     _musicInsideWindow = false;
+    _lastPlaying = false;
     if (controller.value.position > clip.trimEnd) {
       await controller.seekTo(clip.trimEnd);
     }
     playbackPosition.value = _project?.totalDuration ?? Duration.zero;
+    notifyListeners();
   }
 
   // -- Phase 4: overlap (transition) preview ------------------------------------
@@ -827,7 +944,8 @@ class EditorState extends ChangeNotifier {
 
     final segments = project.layout.segments;
     final seg = segments[index];
-    final inWindow = seg.overlapAfter > Duration.zero &&
+    final inWindow =
+        seg.overlapAfter > Duration.zero &&
         projectPosition >= seg.seam &&
         projectPosition < seg.coveredEnd;
 
@@ -864,11 +982,12 @@ class EditorState extends ChangeNotifier {
       }
       _playerPool[next.sourcePath] = controller;
 
-      final phaseMs =
-          (playbackPosition.value - seg.seam).inMilliseconds.clamp(0, 1 << 40);
+      final phaseMs = (playbackPosition.value - seg.seam).inMilliseconds.clamp(
+        0,
+        1 << 40,
+      );
       final targetSource = clampDuration(
-        next.trimStart +
-            Duration(milliseconds: (phaseMs * next.speed).round()),
+        next.trimStart + Duration(milliseconds: (phaseMs * next.speed).round()),
         next.trimStart,
         next.trimEnd,
       );
@@ -986,8 +1105,9 @@ class EditorState extends ChangeNotifier {
   bool canSplitAt(Duration projectPosition) {
     final project = _project;
     if (project == null || project.isEmpty) return false;
-    final resolved =
-        project.clipAt(clampDuration(projectPosition, Duration.zero, project.totalDuration));
+    final resolved = project.clipAt(
+      clampDuration(projectPosition, Duration.zero, project.totalDuration),
+    );
     final offset = resolved.localPosition;
     return offset >= AppConstants.minClipDuration &&
         resolved.clip.effectiveDuration - offset >=
@@ -1002,8 +1122,11 @@ class EditorState extends ChangeNotifier {
     final project = _project;
     if (project == null || project.isEmpty) return;
 
-    final position =
-        clampDuration(playbackPosition.value, Duration.zero, project.totalDuration);
+    final position = clampDuration(
+      playbackPosition.value,
+      Duration.zero,
+      project.totalDuration,
+    );
     final resolved = project.clipAt(position);
 
     try {
@@ -1064,8 +1187,11 @@ class EditorState extends ChangeNotifier {
       _selectedClipId =
           remaining[neighbourIndex.clamp(0, remaining.length - 1)].id;
 
-      playbackPosition.value =
-          clampDuration(newPosition, Duration.zero, updated.totalDuration);
+      playbackPosition.value = clampDuration(
+        newPosition,
+        Duration.zero,
+        updated.totalDuration,
+      );
       unawaited(_syncActiveClipWithPlayhead());
       notifyListeners();
     } on ClipOperationException catch (e) {
@@ -1088,8 +1214,11 @@ class EditorState extends ChangeNotifier {
 
     _commitSnapshot(project.copy(), reordered);
     _selectedClipId = movedId;
-    playbackPosition.value =
-        clampDuration(playbackPosition.value, Duration.zero, _project!.totalDuration);
+    playbackPosition.value = clampDuration(
+      playbackPosition.value,
+      Duration.zero,
+      _project!.totalDuration,
+    );
     unawaited(_syncActiveClipWithPlayhead());
     notifyListeners();
   }
@@ -1133,6 +1262,7 @@ class EditorState extends ChangeNotifier {
         trimEnd: newEnd,
         minSegment: AppConstants.minClipDuration,
       );
+      _scheduleAutosave();
     } on ClipOperationException {
       return;
     }
@@ -1175,6 +1305,7 @@ class EditorState extends ChangeNotifier {
         trimEnd: clampDuration(end, Duration.zero, selected.sourceDuration),
         minSegment: Duration.zero,
       );
+      _scheduleAutosave();
     } on ClipOperationException {
       return;
     }
@@ -1201,11 +1332,11 @@ class EditorState extends ChangeNotifier {
     );
 
     final controller = _activeController;
-    final isActiveClip =
-        controller != null && _activeClipId == clipId;
+    final isActiveClip = controller != null && _activeClipId == clipId;
 
     try {
       _project = project.withSpeed(clipId, clamped);
+      _scheduleAutosave();
     } on ClipOperationException {
       return;
     }
@@ -1224,8 +1355,7 @@ class EditorState extends ChangeNotifier {
         final localOutput = Duration(
           milliseconds: (sourceLocal.inMilliseconds / clamped).round(),
         );
-        playbackPosition.value =
-            _project!.projectTimeOf(clip, localOutput);
+        playbackPosition.value = _project!.projectTimeOf(clip, localOutput);
       }
     } else {
       playbackPosition.value = clampDuration(
@@ -1252,6 +1382,7 @@ class EditorState extends ChangeNotifier {
     if (project == null) return;
     try {
       _project = project.withTransform(clipId, value);
+      _scheduleAutosave();
     } on ClipOperationException {
       return;
     }
@@ -1270,6 +1401,7 @@ class EditorState extends ChangeNotifier {
     if (project == null) return;
     try {
       _project = project.withFilter(clipId, value);
+      _scheduleAutosave();
     } on ClipOperationException {
       return;
     }
@@ -1294,6 +1426,7 @@ class EditorState extends ChangeNotifier {
     );
     try {
       _project = project.withAdjustments(clipId, clamped);
+      _scheduleAutosave();
     } on ClipOperationException {
       return;
     }
@@ -1358,9 +1491,7 @@ class EditorState extends ChangeNotifier {
   Duration get maxTransitionAfterSelected {
     final project = _project;
     final index = selectedIndex;
-    if (project == null ||
-        index < 0 ||
-        index + 1 >= project.clips.length) {
+    if (project == null || index < 0 || index + 1 >= project.clips.length) {
       return Duration.zero;
     }
     final segments = project.layout.segments;
@@ -1394,6 +1525,7 @@ class EditorState extends ChangeNotifier {
     if (project == null) return;
     try {
       _project = project.upsertTransition(clipId, transition);
+      _scheduleAutosave();
     } on ClipOperationException {
       return;
     }
@@ -1438,6 +1570,7 @@ class EditorState extends ChangeNotifier {
     if (project == null) return;
     final clamped = volume.clamp(0.0, AppConstants.maxAudioVolume);
     _project = project.withOriginalAudioVolume(clamped);
+    _scheduleAutosave();
     final controller = _activeController;
     if (controller != null) {
       unawaited(controller.setVolume(clamped));
@@ -1452,6 +1585,7 @@ class EditorState extends ChangeNotifier {
     if (project == null || track == null) return;
     final clamped = volume.clamp(0.0, AppConstants.maxAudioVolume);
     _project = project.upsertAudioTrack(track.copyWith(volume: clamped));
+    _scheduleAutosave();
     final controller = _musicController;
     if (controller != null && controller.value.isInitialized) {
       unawaited(controller.setVolume(clamped));
@@ -1480,10 +1614,16 @@ class EditorState extends ChangeNotifier {
     isLoadingProject = true;
     notifyListeners();
     try {
-      final info = await _ffmpeg.probe(path);
+      // Copy the picked audio into the session media folder so the saved
+      // project keeps a valid music source for up to two days.
+      final id = _sessionId;
+      if (id == null) throw const MediaFormatException();
+      final storedPath = await _sessions.storeMedia(id, path);
+
+      final info = await _ffmpeg.probe(storedPath);
       final track = AudioTrack(
         id: OverlayId.next('music'),
-        sourcePath: path,
+        sourcePath: storedPath,
         sourceStart: Duration.zero,
         sourceEnd: info.duration > Duration.zero
             ? info.duration
@@ -1552,6 +1692,7 @@ class EditorState extends ChangeNotifier {
     if (project == null) return;
     if (!project.textOverlays.any((o) => o.id == overlay.id)) return;
     _project = project.upsertTextOverlay(overlay);
+    _scheduleAutosave();
     notifyListeners();
   }
 
@@ -1566,6 +1707,7 @@ class EditorState extends ChangeNotifier {
     final ny = y.clamp(0.0, 1.0);
     if (nx == current.x && ny == current.y) return;
     _project = project.upsertTextOverlay(current.copyWith(x: nx, y: ny));
+    _scheduleAutosave();
     notifyListeners();
   }
 
@@ -1573,8 +1715,7 @@ class EditorState extends ChangeNotifier {
     if (_selectedTextId == id) return;
     final project = _project;
     if (id != null &&
-        (project == null ||
-            !project.textOverlays.any((o) => o.id == id))) {
+        (project == null || !project.textOverlays.any((o) => o.id == id))) {
       return;
     }
     _selectedTextId = id;
@@ -1592,10 +1733,7 @@ class EditorState extends ChangeNotifier {
     final project = _project;
     final selected = selectedText;
     if (project == null || selected == null) return;
-    _commitSnapshot(
-      project.copy(),
-      project.withoutTextOverlay(selected.id),
-    );
+    _commitSnapshot(project.copy(), project.withoutTextOverlay(selected.id));
     _selectedTextId = null;
     notifyListeners();
   }
@@ -1605,8 +1743,11 @@ class EditorState extends ChangeNotifier {
   Future<void> _syncActiveClipWithPlayhead() async {
     final project = _project;
     if (project == null || project.isEmpty) return;
-    final position =
-        clampDuration(playbackPosition.value, Duration.zero, project.totalDuration);
+    final position = clampDuration(
+      playbackPosition.value,
+      Duration.zero,
+      project.totalDuration,
+    );
     playbackPosition.value = position;
     await _movePlayhead(position);
   }
@@ -1614,8 +1755,7 @@ class EditorState extends ChangeNotifier {
   void _adoptProject(VideoProject restored) {
     _project = restored;
     if (_selectedClipId == null || restored.indexOf(_selectedClipId!) < 0) {
-      _selectedClipId =
-          restored.isNotEmpty ? restored.clips.first.id : null;
+      _selectedClipId = restored.isNotEmpty ? restored.clips.first.id : null;
     }
     if (_selectedTextId != null &&
         !restored.textOverlays.any((o) => o.id == _selectedTextId)) {
@@ -1635,6 +1775,7 @@ class EditorState extends ChangeNotifier {
       restored.totalDuration,
     );
     unawaited(_syncActiveClipWithPlayhead());
+    _scheduleAutosave();
   }
 
   // -- Export --------------------------------------------------------------------
@@ -1648,6 +1789,183 @@ class EditorState extends ChangeNotifier {
       notifyListeners();
     } catch (_) {
       // Defaults stay active when settings storage is unavailable.
+    }
+  }
+
+  Future<void> _initSessions() async {
+    try {
+      final sessions = await _sessions.listRecent();
+      if (_disposed) return;
+      recentSessions.value = sessions;
+      notifyListeners();
+    } catch (_) {
+      // Session storage unavailable; run without persistence.
+    }
+  }
+
+  /// Queues an autosave that fires ~1.5s after the last change, so rapid
+  /// edits coalesce into a single disk write.
+  void _scheduleAutosave() {
+    final id = _sessionId;
+    if (id == null) return;
+    _autosaveTimer?.cancel();
+    _autosaveTimer = Timer(const Duration(milliseconds: 1500), () {
+      _autosaveTimer = null;
+      _saveSessionNow();
+    });
+  }
+
+  Future<void> _saveSessionNow() async {
+    final id = _sessionId;
+    final project = _project;
+    // Capture the poster NOW; closeProject() clears the field right after
+    // kicking off the final flush, so the in-flight save must not read it
+    // lazily or the closing session would lose its thumbnail.
+    final poster = _posterPath;
+    if (id == null || project == null) return;
+    // Serialize writes: each save chains after the previous one, always
+    // persisting the newest snapshot, so rapid triggers can never reorder.
+    final previous = _autosaveInFlight;
+    _autosaveInFlight = (previous ?? Future.value()).then(
+      (_) => _doSaveSession(id, project, posterPath: poster),
+    );
+    try {
+      await _autosaveInFlight;
+    } catch (_) {}
+  }
+
+  Future<void> _doSaveSession(
+    String id,
+    VideoProject project, {
+    String? posterPath,
+  }) async {
+    try {
+      final record = await _sessions.saveProject(
+        id,
+        project,
+        posterPath: posterPath,
+      );
+      if (_disposed) return;
+      recentSessions.value = [
+        record,
+        ...recentSessions.value.where((r) => r.id != id),
+      ];
+      notifyListeners();
+    } catch (_) {
+      // Autosave failures are non-fatal; the in-memory project still works.
+    }
+  }
+
+  /// Restores the most recent active session (if any exists and is not
+  /// expired) and hands control back to [onRestored]. Returns the restored
+  /// project id, or null when there is nothing to resume.
+  Future<String?> restoreActiveSession() async {
+    if (isRestoring) return null;
+    try {
+      final active = await _sessions.activeSession();
+      if (active == null) return null;
+
+      isRestoring = true;
+      notifyListeners();
+      try {
+        final project = await _sessions.loadProject(active.id);
+        if (project == null || project.isEmpty) {
+          await _sessions.deleteSession(active.id);
+          await _refreshRecent();
+          return null;
+        }
+        final restored = await _openRestoredProject(active.id, project);
+        if (!restored) {
+          await _sessions.deleteSession(active.id);
+          await _refreshRecent();
+          return null;
+        }
+        return active.id;
+      } finally {
+        isRestoring = false;
+        notifyListeners();
+      }
+    } catch (_) {
+      // Storage failures must never crash the launch; fall back to home.
+      return null;
+    }
+  }
+
+  Future<void> _refreshRecent() async {
+    try {
+      final sessions = await _sessions.listRecent();
+      if (_disposed) return;
+      recentSessions.value = sessions;
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  /// Deletes a saved session and its media.
+  Future<void> deleteRecentSession(String id) async {
+    if (id == _sessionId) {
+      closeProject();
+    }
+    await _sessions.deleteSession(id);
+    await _refreshRecent();
+  }
+
+  /// Opens a saved session from the Recent list (an explicit tap).
+  Future<bool> openRecentSession(String id) async {
+    if (isLoadingProject) return false;
+    try {
+      final project = await _sessions.loadProject(id);
+      if (project == null || project.isEmpty) return false;
+      final ok = await _openRestoredProject(id, project);
+      return ok;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Rebuilds the live project + players from a saved session, mirroring
+  /// what [openVideo] does for a freshly picked file.
+  Future<bool> _openRestoredProject(String id, VideoProject project) async {
+    closeProject();
+    isLoadingProject = true;
+    projectError = null;
+    notifyListeners();
+
+    try {
+      if (project.isEmpty) return false;
+
+      _sessionId = id;
+      _posterPath = await _sessions
+          .sessionDir(id)
+          .then((d) => '${d.path}/poster.jpg');
+
+      // Activate the FIRST clip's controller; the playhead restore logic in
+      // the editor seeks to the saved position on first tick.
+      final first = project.clips.first;
+      await _activateController(
+        first.sourcePath,
+        clipId: first.id,
+        seekTarget: Duration.zero,
+      );
+      if (_activeController == null) return false;
+
+      _project = project;
+      _selectedClipId = first.id;
+      _undoStack.clear();
+      _redoStack.clear();
+      playbackPosition.value = Duration.zero;
+
+      isLoadingProject = false;
+      notifyListeners();
+
+      for (final clip in project.clips) {
+        unawaited(_loadThumbnailsFor(clip.sourcePath, clip.sourceDuration));
+      }
+      _scheduleAutosave();
+      await _refreshRecent();
+      return true;
+    } finally {
+      isLoadingProject = false;
+      notifyListeners();
     }
   }
 
@@ -1767,6 +2085,12 @@ class EditorState extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
+    _stopPlaybackTimer();
+    _autosaveTimer?.cancel();
+    _autosaveTimer = null;
+    unawaited(_saveSessionNow());
+    unawaited(_sessions.dispose());
     final music = _musicController;
     _musicController = null;
     _musicControllerPath = null;
@@ -1784,6 +2108,7 @@ class EditorState extends ChangeNotifier {
     thumbnailStrips.dispose();
     playbackPosition.dispose();
     exportProgressValue.dispose();
+    recentSessions.dispose();
     super.dispose();
   }
 }

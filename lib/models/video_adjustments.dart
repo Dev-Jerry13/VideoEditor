@@ -20,11 +20,23 @@ class VideoAdjustments {
   final double saturation;
   final double temperature;
 
+  Map<String, dynamic> toJson() => {
+    'brightness': brightness,
+    'contrast': contrast,
+    'saturation': saturation,
+    'temperature': temperature,
+  };
+
+  static VideoAdjustments fromJson(Map<String, dynamic> json) =>
+      VideoAdjustments(
+        brightness: (json['brightness'] as num?)?.toDouble() ?? 0,
+        contrast: (json['contrast'] as num?)?.toDouble() ?? 0,
+        saturation: (json['saturation'] as num?)?.toDouble() ?? 0,
+        temperature: (json['temperature'] as num?)?.toDouble() ?? 0,
+      );
+
   bool get isNeutral =>
-      brightness == 0 &&
-      contrast == 0 &&
-      saturation == 0 &&
-      temperature == 0;
+      brightness == 0 && contrast == 0 && saturation == 0 && temperature == 0;
 
   static double clamp(double value) => value.clamp(min, max);
 

@@ -26,10 +26,10 @@ class CropSettings {
     this.top = 0,
     this.right = 1,
     this.bottom = 1,
-  })  : assert(left >= 0 && left <= 1, 'left must be normalized'),
-        assert(top >= 0 && top <= 1, 'top must be normalized'),
-        assert(right > left, 'right must be greater than left'),
-        assert(bottom > top, 'bottom must be greater than top');
+  }) : assert(left >= 0 && left <= 1, 'left must be normalized'),
+       assert(top >= 0 && top <= 1, 'top must be normalized'),
+       assert(right > left, 'right must be greater than left'),
+       assert(bottom > top, 'bottom must be greater than top');
 
   /// The untouched frame.
   static const CropSettings full = CropSettings();
@@ -39,12 +39,25 @@ class CropSettings {
   final double right;
   final double bottom;
 
+  Map<String, dynamic> toJson() => {
+    'left': left,
+    'top': top,
+    'right': right,
+    'bottom': bottom,
+  };
+
+  static CropSettings fromJson(Map<String, dynamic> json) => CropSettings(
+    left: (json['left'] as num?)?.toDouble() ?? 0,
+    top: (json['top'] as num?)?.toDouble() ?? 0,
+    right: (json['right'] as num?)?.toDouble() ?? 1,
+    bottom: (json['bottom'] as num?)?.toDouble() ?? 1,
+  );
+
   double get widthFraction => right - left;
 
   double get heightFraction => bottom - top;
 
-  bool get isIdentity =>
-      left == 0 && top == 0 && right == 1 && bottom == 1;
+  bool get isIdentity => left == 0 && top == 0 && right == 1 && bottom == 1;
 
   CropSettings copyWith({
     double? left,
@@ -85,10 +98,24 @@ class TransformSettings {
   final bool flipHorizontal;
   final bool flipVertical;
 
+  Map<String, dynamic> toJson() => {
+    'rotation': rotation.name,
+    'flipHorizontal': flipHorizontal,
+    'flipVertical': flipVertical,
+  };
+
+  static TransformSettings fromJson(Map<String, dynamic> json) =>
+      TransformSettings(
+        rotation: Rotation.values.firstWhere(
+          (r) => r.name == json['rotation'],
+          orElse: () => Rotation.none,
+        ),
+        flipHorizontal: json['flipHorizontal'] == true,
+        flipVertical: json['flipVertical'] == true,
+      );
+
   bool get isIdentity =>
-      rotation == Rotation.none &&
-      !flipHorizontal &&
-      !flipVertical;
+      rotation == Rotation.none && !flipHorizontal && !flipVertical;
 
   TransformSettings copyWith({
     Rotation? rotation,
@@ -110,8 +137,7 @@ class TransformSettings {
       other.flipVertical == flipVertical;
 
   @override
-  int get hashCode =>
-      Object.hash(rotation, flipHorizontal, flipVertical);
+  int get hashCode => Object.hash(rotation, flipHorizontal, flipVertical);
 }
 
 class VideoTransform {
@@ -132,6 +158,26 @@ class VideoTransform {
   final double scale;
   final double positionX;
   final double positionY;
+
+  Map<String, dynamic> toJson() => {
+    'crop': crop.toJson(),
+    'transform': transform.toJson(),
+    'scale': scale,
+    'positionX': positionX,
+    'positionY': positionY,
+  };
+
+  static VideoTransform fromJson(Map<String, dynamic> json) => VideoTransform(
+    crop: CropSettings.fromJson(
+      (json['crop'] as Map?)?.cast<String, dynamic>() ?? const {},
+    ),
+    transform: TransformSettings.fromJson(
+      (json['transform'] as Map?)?.cast<String, dynamic>() ?? const {},
+    ),
+    scale: (json['scale'] as num?)?.toDouble() ?? 1.0,
+    positionX: (json['positionX'] as num?)?.toDouble() ?? 0,
+    positionY: (json['positionY'] as num?)?.toDouble() ?? 0,
+  );
 
   bool get isIdentity =>
       crop.isIdentity && transform.isIdentity && scale == 1.0;

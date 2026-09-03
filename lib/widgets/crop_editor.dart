@@ -8,25 +8,16 @@ import '../models/video_project.dart';
 import '../models/video_transform.dart';
 import '../state/editor_state.dart';
 
-/// Crop bottom sheet for the SELECTED clip.
-///
-/// Shows the LIVE frame of the active controller with the crop window drawn
-/// over it. Aspect presets solve windows against the TRUE source aspect
-/// (so "16:9" yields 16:9 output on any source shape); dragging pans the
-/// CONTENT with the finger. Everything applies live; Done collapses the
-/// interaction into one undo entry, dismissing without Done reverts.
-Future<void> showCropSheet(BuildContext context) {
+/// Fullscreen crop editor screen for the selected video clip.
+Future<void> showFullscreenCropScreen(BuildContext context) {
   final state = context.read<EditorState>();
-  return showModalBottomSheet<void>(
-    context: context,
-    isScrollControlled: true,
-    backgroundColor: AppTheme.surface,
-    shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-    ),
-    builder: (_) => ChangeNotifierProvider<EditorState>.value(
-      value: state,
-      child: const _CropSheet(),
+  return Navigator.of(context).push(
+    MaterialPageRoute<void>(
+      fullscreenDialog: true,
+      builder: (_) => ChangeNotifierProvider<EditorState>.value(
+        value: state,
+        child: const _FullscreenCropScreen(),
+      ),
     ),
   );
 }
@@ -36,26 +27,27 @@ class _AspectPreset {
 
   final String label;
 
-  /// w/h, or null for the untouched full frame.
+  /// w/h, or null for the untouched full frame, or -1.0 for custom freeform.
   final double? ratio;
 }
 
 const _presets = <_AspectPreset>[
   _AspectPreset('Full', null),
+  _AspectPreset('Custom', -1.0),
   _AspectPreset('1:1', 1),
   _AspectPreset('4:3', 4 / 3),
   _AspectPreset('16:9', 16 / 9),
   _AspectPreset('9:16', 9 / 16),
 ];
 
-class _CropSheet extends StatefulWidget {
-  const _CropSheet();
+class _FullscreenCropScreen extends StatefulWidget {
+  const _FullscreenCropScreen();
 
   @override
-  State<_CropSheet> createState() => _CropSheetState();
+  State<_FullscreenCropScreen> createState() => _FullscreenCropScreenState();
 }
 
-class _CropSheetState extends State<_CropSheet> {
+class _FullscreenCropScreenState extends State<_FullscreenCropScreen> {
   String? _clipId;
   CropSettings _initial = CropSettings.full;
   VideoProject? _baseline;
@@ -78,9 +70,6 @@ class _CropSheetState extends State<_CropSheet> {
     return null;
   }
 
-  /// DISPLAY aspect ratio (w/h) of the edited clip's frame, honoring the
-  /// player's hidden rotation correction. Falls back to 16:9 only when the
-  /// edited clip isn't the one on screen.
   double _sourceRatio(EditorState state) {
     final controller = state.controller;
     if (controller == null || _clipId != state.activeClipId) return 16 / 9;
@@ -97,10 +86,7 @@ class _CropSheetState extends State<_CropSheet> {
     if (id == null) return;
     for (final c in state.clips) {
       if (c.id == id) {
-        state.updateTransformLive(
-          id,
-          c.transform.copyWith(crop: crop),
-        );
+        state.updateTransformLive(id, c.transform.copyWith(crop: crop));
         return;
       }
     }
@@ -118,16 +104,43 @@ class _CropSheetState extends State<_CropSheet> {
     }
   }
 
-  /// First preset whose window matches the current crop — Full is checked
-  /// first so a 16:9 source showing its full frame highlights Full, not
-  /// the redundant 16:9 chip.
   String? _selectedPresetLabel(CropSettings crop, double sourceRatio) {
+    if (crop.isIdentity) return 'Full';
     for (final preset in _presets) {
-      if (cropMatchesRatio(crop, preset.ratio, sourceRatio)) {
-        return preset.label;
+      if (preset.ratio != null && preset.ratio! > 0) {
+        if (cropMatchesRatio(crop, preset.ratio, sourceRatio)) {
+          return preset.label;
+        }
       }
     }
-    return null;
+    return 'Custom';
+  }
+
+  void _resizeHandle(
+    CropSettings crop,
+    double dx,
+    double dy, {
+    bool left = false,
+    bool top = false,
+    bool right = false,
+    bool bottom = false,
+    required double boxWidth,
+    required double boxHeight,
+  }) {
+    final ndx = dx / boxWidth;
+    final ndy = dy / boxHeight;
+
+    double l = crop.left;
+    double t = crop.top;
+    double r = crop.right;
+    double b = crop.bottom;
+
+    if (left) l = (l + ndx).clamp(0.0, r - 0.1);
+    if (top) t = (t + ndy).clamp(0.0, b - 0.1);
+    if (right) r = (r + ndx).clamp(l + 0.1, 1.0);
+    if (bottom) b = (b + ndy).clamp(t + 0.1, 1.0);
+
+    _update(CropSettings(left: l, top: t, right: r, bottom: b));
   }
 
   @override
@@ -141,92 +154,95 @@ class _CropSheetState extends State<_CropSheet> {
 
     final changed = crop != _initial;
     final sourceRatio = _sourceRatio(state);
+    final activePreset = _selectedPresetLabel(crop, sourceRatio);
 
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(24, 12, 24, 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Center(
-              child: Container(
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: Colors.white24,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Text('Crop', style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 6),
-            Text(
-              'Drag to move the frame · '
-              '${_sizeLabel(crop)} of the original',
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        title: const Text('Crop Video'),
+        leading: IconButton(
+          icon: const Icon(Icons.close_rounded),
+          onPressed: () {
+            if (changed) _revert();
+            Navigator.of(context).pop();
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: changed && _baseline != null
+                ? () {
+                    context.read<EditorState>().insertUndoSnapshot(_baseline!);
+                    Navigator.of(context).pop();
+                  }
+                : null,
+            child: Text(
+              'Apply',
               style: TextStyle(
-                fontSize: 13,
-                color: Colors.white.withValues(alpha: .55),
+                fontWeight: FontWeight.bold,
+                color: changed ? AppTheme.accent : Colors.white38,
               ),
             ),
-            const SizedBox(height: 16),
-            _CropPreviewBox(
-              crop: crop,
-              sourceRatio: sourceRatio,
-              controller:
-                  _clipId == state.activeClipId ? state.controller : null,
-              onPan: (dx, dy) =>
-                  setState(() => _update(panCrop(crop, -dx, -dy))),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: Column(
+          children: [
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: _FullscreenCropBox(
+                  crop: crop,
+                  sourceRatio: sourceRatio,
+                  controller: _clipId == state.activeClipId ? state.controller : null,
+                  onPan: (dx, dy) => setState(() => _update(panCrop(crop, -dx, -dy))),
+                  onResize: (dx, dy, {left = false, top = false, right = false, bottom = false, required boxWidth, required boxHeight}) =>
+                      setState(() => _resizeHandle(crop, dx, dy, left: left, top: top, right: right, bottom: bottom, boxWidth: boxWidth, boxHeight: boxHeight)),
+                ),
+              ),
             ),
-            const SizedBox(height: 16),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final preset in _presets)
-                  ChoiceChip(
-                    label: Text(preset.label),
-                    selected:
-                        _selectedPresetLabel(crop, sourceRatio) ==
-                            preset.label,
-                    onSelected: (_) => setState(() => _update(
-                          cropWindowForRatio(
-                            sourceRatio: sourceRatio,
-                            outputRatio: preset.ratio,
-                            anchor: crop,
+            Container(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+              color: Colors.black87,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Drag corners to resize · Drag center to move · ${_sizeLabel(crop)}',
+                    style: TextStyle(fontSize: 13, color: Colors.white.withValues(alpha: .55)),
+                  ),
+                  const SizedBox(height: 12),
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        for (final preset in _presets)
+                          Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: ChoiceChip(
+                              label: Text(preset.label),
+                              selected: activePreset == preset.label,
+                              onSelected: (_) {
+                                if (preset.ratio == -1.0) {
+                                  setState(() {});
+                                  return;
+                                }
+                                setState(() => _update(
+                                      cropWindowForRatio(
+                                        sourceRatio: sourceRatio,
+                                        outputRatio: preset.ratio,
+                                        anchor: crop,
+                                      ),
+                                    ));
+                              },
+                            ),
                           ),
-                        )),
+                      ],
+                    ),
                   ),
-              ],
-            ),
-            const SizedBox(height: 22),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: () {
-                      if (changed) _revert();
-                      Navigator.of(context).pop();
-                    },
-                    child: const Text('Cancel'),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: FilledButton(
-                    onPressed: changed && _baseline != null
-                        ? () {
-                            context
-                                .read<EditorState>()
-                                .insertUndoSnapshot(_baseline!);
-                            Navigator.of(context).pop();
-                          }
-                        : null,
-                    child: const Text('Apply'),
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
           ],
         ),
@@ -241,61 +257,56 @@ class _CropSheetState extends State<_CropSheet> {
   }
 }
 
-/// LIVE frame preview with the crop window framed over it. The box is
-/// contain-fitted to the true display ratio so overlay fractions map 1:1
-/// onto real frame coordinates; drag gestures report normalized deltas.
-class _CropPreviewBox extends StatelessWidget {
-  const _CropPreviewBox({
+class _FullscreenCropBox extends StatelessWidget {
+  const _FullscreenCropBox({
     required this.crop,
     required this.sourceRatio,
     required this.onPan,
+    required this.onResize,
     this.controller,
   });
 
   final CropSettings crop;
-
-  /// Display aspect ratio (w/h) of the underlying frame.
   final double sourceRatio;
-
   final void Function(double dx, double dy) onPan;
-
-  /// Live controller for the edited clip, or null to fall back to a dark
-  /// stand-in (e.g. editing a non-active clip).
+  final void Function(
+    double dx,
+    double dy, {
+    bool left,
+    bool top,
+    bool right,
+    bool bottom,
+    required double boxWidth,
+    required double boxHeight,
+  }) onResize;
   final VideoPlayerController? controller;
 
   @override
   Widget build(BuildContext context) {
-    final live =
-        controller != null && controller!.value.isInitialized;
+    final live = controller != null && controller!.value.isInitialized;
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        // Contain-fit the frame into the available sheet space.
         final maxW = constraints.maxWidth;
-        final maxH =
-            constraints.maxHeight.isFinite ? constraints.maxHeight : 320.0;
+        final maxH = constraints.maxHeight;
         var boxWidth = maxW;
         var boxHeight = boxWidth / sourceRatio;
         if (boxHeight > maxH) {
-          boxHeight = maxH.clamp(120.0, 340.0);
+          boxHeight = maxH;
           boxWidth = boxHeight * sourceRatio;
-        }
-
-        void handle(DragUpdateDetails d) {
-          onPan(d.delta.dx / boxWidth, d.delta.dy / boxHeight);
         }
 
         return Center(
           child: GestureDetector(
-            onPanUpdate: handle,
+            onPanUpdate: (d) => onPan(d.delta.dx / boxWidth, d.delta.dy / boxHeight),
             child: Container(
               width: boxWidth,
               height: boxHeight,
               clipBehavior: Clip.antiAlias,
               decoration: BoxDecoration(
-                color: Colors.black26,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.white12),
+                color: Colors.black,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.white24),
               ),
               child: Stack(
                 fit: StackFit.expand,
@@ -321,10 +332,30 @@ class _CropPreviewBox extends StatelessWidget {
                     width: boxWidth * crop.widthFraction,
                     height: boxHeight * crop.heightFraction,
                     child: Container(
-                      foregroundDecoration: BoxDecoration(
-                        border:
-                            Border.all(color: AppTheme.accent, width: 2),
-                        borderRadius: BorderRadius.circular(6),
+                      decoration: BoxDecoration(
+                        border: Border.all(color: AppTheme.accent, width: 2),
+                      ),
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          CustomPaint(painter: _CropGridPainter()),
+                          _CropHandle(
+                            alignment: Alignment.topLeft,
+                            onPan: (dx, dy) => onResize(dx, dy, left: true, top: true, boxWidth: boxWidth, boxHeight: boxHeight),
+                          ),
+                          _CropHandle(
+                            alignment: Alignment.topRight,
+                            onPan: (dx, dy) => onResize(dx, dy, right: true, top: true, boxWidth: boxWidth, boxHeight: boxHeight),
+                          ),
+                          _CropHandle(
+                            alignment: Alignment.bottomLeft,
+                            onPan: (dx, dy) => onResize(dx, dy, left: true, bottom: true, boxWidth: boxWidth, boxHeight: boxHeight),
+                          ),
+                          _CropHandle(
+                            alignment: Alignment.bottomRight,
+                            onPan: (dx, dy) => onResize(dx, dy, right: true, bottom: true, boxWidth: boxWidth, boxHeight: boxHeight),
+                          ),
+                        ],
                       ),
                     ),
                   ),
@@ -337,15 +368,57 @@ class _CropPreviewBox extends StatelessWidget {
     );
   }
 
-  /// The four strips OUTSIDE the crop window (left/right/top/bottom).
-  static List<(double, double, double, double)> _dimmedRegions(
-    CropSettings c,
-  ) {
+  static List<(double, double, double, double)> _dimmedRegions(CropSettings c) {
     return [
-      (0, 0, c.left, 1), // left strip
-      (c.right, 0, 1 - c.right, 1), // right strip
-      (c.left, 0, c.widthFraction, c.top), // top strip
-      (c.left, c.bottom, c.widthFraction, 1 - c.bottom), // bottom strip
+      (0, 0, c.left, 1),
+      (c.right, 0, 1 - c.right, 1),
+      (c.left, 0, c.widthFraction, c.top),
+      (c.left, c.bottom, c.widthFraction, 1 - c.bottom),
     ];
   }
+}
+
+class _CropHandle extends StatelessWidget {
+  const _CropHandle({required this.alignment, required this.onPan});
+  final Alignment alignment;
+  final void Function(double dx, double dy) onPan;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: alignment,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onPanUpdate: (d) => onPan(d.delta.dx, d.delta.dy),
+        child: Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            color: AppTheme.accent,
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.white, width: 2),
+            boxShadow: const [
+              BoxShadow(blurRadius: 4, color: Colors.black54),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CropGridPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.white38
+      ..strokeWidth = 1;
+    canvas.drawLine(Offset(size.width / 3, 0), Offset(size.width / 3, size.height), paint);
+    canvas.drawLine(Offset(size.width * 2 / 3, 0), Offset(size.width * 2 / 3, size.height), paint);
+    canvas.drawLine(Offset(0, size.height / 3), Offset(size.width, size.height / 3), paint);
+    canvas.drawLine(Offset(0, size.height * 2 / 3), Offset(size.width, size.height * 2 / 3), paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

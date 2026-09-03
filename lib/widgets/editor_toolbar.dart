@@ -122,7 +122,7 @@ class EditorToolbar extends StatelessWidget {
                 icon: Icons.crop_rounded,
                 label: 'Crop',
                 enabled: hasProject && !busy && state.selectedClip != null,
-                onTap: () => showCropSheet(context),
+                onTap: () => showFullscreenCropScreen(context),
               ),
               _ToolButton(
                 icon: Icons.rotate_right_rounded,

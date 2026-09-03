@@ -38,6 +38,39 @@ class VideoClip {
   final VideoFilter filter;
   final VideoAdjustments adjustments;
 
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'sourcePath': sourcePath,
+    'sourceDurationMs': sourceDuration.inMilliseconds,
+    'trimStartMs': trimStart.inMilliseconds,
+    'trimEndMs': trimEnd.inMilliseconds,
+    'speed': speed,
+    'transform': transform.toJson(),
+    'filter': filter.code,
+    'adjustments': adjustments.toJson(),
+  };
+
+  static VideoClip fromJson(Map<String, dynamic> json) {
+    final sourceDuration = Duration(
+      milliseconds: json['sourceDurationMs'] as int? ?? 1,
+    );
+    return VideoClip(
+      id: json['id'] as String? ?? '',
+      sourcePath: json['sourcePath'] as String? ?? '',
+      sourceDuration: sourceDuration,
+      trimStart: Duration(milliseconds: json['trimStartMs'] as int? ?? 0),
+      trimEnd: Duration(milliseconds: json['trimEndMs'] as int? ?? 1),
+      speed: (json['speed'] as num?)?.toDouble() ?? 1.0,
+      transform: VideoTransform.fromJson(
+        (json['transform'] as Map?)?.cast<String, dynamic>() ?? const {},
+      ),
+      filter: VideoFilter.fromCode(json['filter'] as String?),
+      adjustments: VideoAdjustments.fromJson(
+        (json['adjustments'] as Map?)?.cast<String, dynamic>() ?? const {},
+      ),
+    );
+  }
+
   /// Position of the clip within the project timeline is derived from its
   /// index in [VideoProject.clips]; it is intentionally not stored here.
   Duration get trimmedDuration => trimEnd - trimStart;
