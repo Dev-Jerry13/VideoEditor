@@ -60,8 +60,8 @@ class EditorState extends ChangeNotifier {
   String? _sessionId;
   String? _posterPath;
 
-  /// Most-recently-used sessions, newest first (drafts only). Pruned on a
-  /// 2-day cadence.
+  /// Most-recently-used sessions, newest first. Drafts remain available until
+  /// the user removes them from Recent.
   final ValueNotifier<List<SessionRecord>> recentSessions = ValueNotifier(
     const [],
   );
@@ -113,6 +113,7 @@ class EditorState extends ChangeNotifier {
   Duration? _queuedSeek;
 
   bool isLoadingProject = false;
+  bool isSavingProject = false;
   String? projectError;
 
   /// Message for rejected edit actions (invalid split position, deleting
@@ -259,6 +260,7 @@ class EditorState extends ChangeNotifier {
       _incomingSourcePath == null ? null : _playerPool[_incomingSourcePath];
 
   VideoProject? get project => _project;
+  String get projectName => _project?.name ?? 'Video Editor';
   List<VideoClip> get clips => _project?.clips ?? const [];
   bool get hasProject =>
       _project != null &&
@@ -311,6 +313,20 @@ class EditorState extends ChangeNotifier {
     }
   }
 
+  /// Reads media metadata before creating a draft copy. This lets the import
+  /// UI reject unsupported or corrupt files without consuming session storage.
+  Future<MediaInfo?> inspectVideoFile(String path) async {
+    try {
+      return await _ffmpeg.probe(path);
+    } on AppException catch (e) {
+      projectError = e.userMessage;
+    } catch (_) {
+      projectError = 'This video could not be read. Choose another file.';
+    }
+    notifyListeners();
+    return null;
+  }
+
   /// Probes [path] and opens it as a fresh single-clip project.
   /// Returns true on success.
   Future<bool> openVideo(String path) async {
@@ -321,11 +337,12 @@ class EditorState extends ChangeNotifier {
 
     try {
       final id = 'proj_${DateTime.now().microsecondsSinceEpoch}';
+      // Validate the original before copying it into a session. A bad or
+      // unsupported selection should never leave an orphaned draft on disk.
+      final info = await _ffmpeg.probe(path);
       // Copy the picked source into app storage so the saved session keeps
       // a valid file for up to two days, even if the original moves.
       final storedPath = await _sessions.storeMedia(id, path);
-
-      final info = await _ffmpeg.probe(storedPath);
       final clip = VideoClip(
         id: ClipId.next(),
         sourcePath: storedPath,
@@ -402,11 +419,11 @@ class EditorState extends ChangeNotifier {
     isLoadingProject = true;
     notifyListeners();
     try {
+      // Fail before copying large invalid media into the draft directory.
+      final info = await _ffmpeg.probe(path);
       // Copy the added source into the session media folder so the saved
       // project references a stable local file.
       final storedPath = await _sessions.storeMedia(id, path);
-
-      final info = await _ffmpeg.probe(storedPath);
       final clip = VideoClip(
         id: ClipId.next(),
         sourcePath: storedPath,
@@ -419,7 +436,7 @@ class EditorState extends ChangeNotifier {
       order.insert(anchor >= 0 ? anchor + 1 : order.length, clip);
       _commitSnapshot(
         before.copy(),
-        VideoProject(name: before.name, clips: order),
+        before.withClips(order),
       );
       _selectedClipId = clip.id;
 
@@ -478,6 +495,27 @@ class EditorState extends ChangeNotifier {
     lastDelivery = null;
     exportError = null;
     actionError = null;
+    isSavingProject = false;
+    notifyListeners();
+  }
+
+  /// Renames the current draft and queues an immediate durable save. Names
+  /// are intentionally capped so the app bar and recent-project list remain
+  /// readable on compact devices.
+  void renameProject(String value) {
+    final project = _project;
+    final name = value.trim().replaceAll(RegExp(r'\s+'), ' ');
+    if (project == null) return;
+    if (name.isEmpty) {
+      actionError = 'Enter a project name.';
+      notifyListeners();
+      return;
+    }
+    if (name == project.name) return;
+    _project = project.renamed(
+      name.length > 60 ? name.substring(0, 60) : name,
+    );
+    _scheduleAutosave();
     notifyListeners();
   }
 
@@ -1825,13 +1863,22 @@ class EditorState extends ChangeNotifier {
     if (id == null || project == null) return;
     // Serialize writes: each save chains after the previous one, always
     // persisting the newest snapshot, so rapid triggers can never reorder.
+    isSavingProject = true;
+    notifyListeners();
     final previous = _autosaveInFlight;
-    _autosaveInFlight = (previous ?? Future.value()).then(
+    final save = (previous ?? Future.value()).then(
       (_) => _doSaveSession(id, project, posterPath: poster),
     );
+    _autosaveInFlight = save;
     try {
-      await _autosaveInFlight;
+      await save;
     } catch (_) {}
+    // A newer save may already be queued while this one completes. Only the
+    // newest operation is allowed to clear the visible saving state.
+    if (!_disposed && identical(_autosaveInFlight, save)) {
+      isSavingProject = false;
+      notifyListeners();
+    }
   }
 
   Future<void> _doSaveSession(

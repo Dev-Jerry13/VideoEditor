@@ -501,6 +501,34 @@ class VideoProject {
     outputAspectRatio: outputAspectRatio,
   );
 
+  /// Returns this project with a user-facing [name], leaving every edit and
+  /// export setting intact. Project names are metadata, so callers do not
+  /// need to create an undo entry just to rename a draft.
+  VideoProject renamed(String name) => VideoProject(
+    name: name,
+    clips: clips,
+    audioTracks: audioTracks,
+    textOverlays: textOverlays,
+    transitions: transitions,
+    originalAudioVolume: originalAudioVolume,
+    outputAspectRatio: outputAspectRatio,
+  );
+
+  /// Replaces the ordered clip list while preserving project-level edits.
+  ///
+  /// This is deliberately separate from [reordered]: importing another clip
+  /// must not accidentally discard music, text, transitions, volume, or the
+  /// chosen output aspect ratio.
+  VideoProject withClips(List<VideoClip> updatedClips) => VideoProject(
+    name: name,
+    clips: updatedClips,
+    audioTracks: audioTracks,
+    textOverlays: textOverlays,
+    transitions: transitions,
+    originalAudioVolume: originalAudioVolume,
+    outputAspectRatio: outputAspectRatio,
+  );
+
   // -- Internal constructors ---------------------------------------------------
 
   VideoProject _mapClip(String clipId, VideoClip Function(VideoClip) edit) {

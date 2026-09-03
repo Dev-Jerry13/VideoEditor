@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:video_editor/models/audio_track.dart';
+import 'package:video_editor/models/clip_transition.dart';
 import 'package:video_editor/models/text_overlay.dart';
 import 'package:video_editor/models/video_clip.dart';
 import 'package:video_editor/models/video_project.dart';
@@ -37,6 +38,53 @@ void main() {
   group('totalDuration', () {
     test('sums trimmed durations', () {
       expect(project().totalDuration, const Duration(seconds: 17));
+    });
+  });
+
+  group('project metadata preservation', () {
+    test('renamed changes only the project name', () {
+      final original = project();
+      final renamed = original.renamed('Weekend edit');
+
+      expect(renamed.name, 'Weekend edit');
+      expect(renamed.clips, original.clips);
+      expect(renamed.totalDuration, original.totalDuration);
+    });
+
+    test('withClips preserves project-level editing settings', () {
+      final original = VideoProject(
+        name: 'test',
+        clips: project().clips,
+        audioTracks: [
+          const AudioTrack(
+            id: 'music',
+            sourcePath: '/source/music.mp3',
+            sourceStart: Duration.zero,
+            sourceEnd: Duration(seconds: 5),
+          ),
+        ],
+        textOverlays: const [
+          TextOverlay(
+            id: 'title',
+            text: 'Hello',
+            startTime: Duration.zero,
+            endTime: Duration(seconds: 2),
+          ),
+        ],
+        transitions: const {
+          'a': ClipTransition(type: TransitionType.fade),
+        },
+        originalAudioVolume: .4,
+        outputAspectRatio: '9:16',
+      );
+      final updated = original.withClips([original.clips.first]);
+
+      expect(updated.clips, hasLength(1));
+      expect(updated.originalAudioVolume, .4);
+      expect(updated.outputAspectRatio, '9:16');
+      expect(updated.musicTrack?.id, 'music');
+      expect(updated.textOverlays.single.id, 'title');
+      expect(updated.transitions['a']?.type, TransitionType.fade);
     });
   });
 
