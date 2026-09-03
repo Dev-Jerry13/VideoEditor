@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:video_editor/models/audio_track.dart';
+import 'package:video_editor/models/clip_transition.dart';
 import 'package:video_editor/models/text_overlay.dart';
 import 'package:video_editor/models/video_clip.dart';
 import 'package:video_editor/models/video_project.dart';

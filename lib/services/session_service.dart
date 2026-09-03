@@ -8,9 +8,6 @@ import 'package:sqflite/sqflite.dart';
 import '../models/video_project.dart';
 import 'ffmpeg_service.dart';
 
-/// Lifetime of an editing session / recent entry before it is purged.
-const Duration sessionLifetime = Duration(days: 2);
-
 /// A single saved editing session (a draft project plus its copied media).
 class SessionRecord {
   const SessionRecord({
@@ -28,9 +25,6 @@ class SessionRecord {
   final String? posterPath;
   final int clipCount;
   final int totalMs;
-
-  bool get isExpired =>
-      DateTime.now().difference(lastOpenedAt) > sessionLifetime;
 
   Map<String, dynamic> toDbMap() => {
     'id': id,
@@ -61,8 +55,8 @@ class SessionRecord {
 ///   `.../sessions/<id>/poster.jpg`   - first-clip thumbnail for the Recent list
 ///
 /// A SQLite database indexes every session (id, name, poster, timestamps) so
-/// the Recent list can be queried without reading project JSON. Sessions older
-/// than [sessionLifetime] are pruned along with their media.
+/// the Recent list can be queried without reading project JSON. Drafts remain
+/// available until the user explicitly removes them.
 class SessionService {
   SessionService({FFmpegService? ffmpeg}) : _ffmpeg = ffmpeg ?? FFmpegService();
 
@@ -243,19 +237,11 @@ class SessionService {
     }
   }
 
-  /// Lists all sessions, most-recently-opened first, pruning expired ones.
+  /// Lists all sessions, most-recently-opened first.
   Future<List<SessionRecord>> listRecent() async {
     final db = await _database();
     final rows = await db.query('sessions', orderBy: 'lastOpenedAt DESC');
-    final records = rows.map(SessionRecord.fromDbMap).toList();
-
-    final expired = records.where((r) => r.isExpired).toList();
-    if (expired.isNotEmpty) {
-      for (final r in expired) {
-        await _deleteSession(r.id);
-      }
-    }
-    return records.where((r) => !r.isExpired).toList();
+    return rows.map(SessionRecord.fromDbMap).toList();
   }
 
   Future<SessionRecord?> activeSession() async {

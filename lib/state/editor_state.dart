@@ -60,8 +60,8 @@ class EditorState extends ChangeNotifier {
   String? _sessionId;
   String? _posterPath;
 
-  /// Most-recently-used sessions, newest first (drafts only). Pruned on a
-  /// 2-day cadence.
+  /// Most-recently-used sessions, newest first. Drafts remain available until
+  /// the user removes them from Recent.
   final ValueNotifier<List<SessionRecord>> recentSessions = ValueNotifier(
     const [],
   );

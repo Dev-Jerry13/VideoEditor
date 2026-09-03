@@ -2,8 +2,7 @@
 ///
 /// Everything is stored NORMALIZED (fractions of the source frame) so the
 /// same values drive the Flutter preview and the FFmpeg export at any
-/// resolution. [scale]/[positionX]/[positionY] are reserved for a future
-/// zoom/pan feature; Phase 4 never reads them.
+/// resolution.
 enum Rotation {
   none(0),
   clockwise90(1),
@@ -144,9 +143,6 @@ class VideoTransform {
   const VideoTransform({
     this.crop = CropSettings.full,
     this.transform = TransformSettings.identity,
-    this.scale = 1.0,
-    this.positionX = 0,
-    this.positionY = 0,
   });
 
   static const VideoTransform identity = VideoTransform();
@@ -154,17 +150,9 @@ class VideoTransform {
   final CropSettings crop;
   final TransformSettings transform;
 
-  // -- Reserved for a future zoom/pan feature (unused in Phase 4). ----------
-  final double scale;
-  final double positionX;
-  final double positionY;
-
   Map<String, dynamic> toJson() => {
     'crop': crop.toJson(),
     'transform': transform.toJson(),
-    'scale': scale,
-    'positionX': positionX,
-    'positionY': positionY,
   };
 
   static VideoTransform fromJson(Map<String, dynamic> json) => VideoTransform(
@@ -174,27 +162,17 @@ class VideoTransform {
     transform: TransformSettings.fromJson(
       (json['transform'] as Map?)?.cast<String, dynamic>() ?? const {},
     ),
-    scale: (json['scale'] as num?)?.toDouble() ?? 1.0,
-    positionX: (json['positionX'] as num?)?.toDouble() ?? 0,
-    positionY: (json['positionY'] as num?)?.toDouble() ?? 0,
   );
 
-  bool get isIdentity =>
-      crop.isIdentity && transform.isIdentity && scale == 1.0;
+  bool get isIdentity => crop.isIdentity && transform.isIdentity;
 
   VideoTransform copyWith({
     CropSettings? crop,
     TransformSettings? transform,
-    double? scale,
-    double? positionX,
-    double? positionY,
   }) {
     return VideoTransform(
       crop: crop ?? this.crop,
       transform: transform ?? this.transform,
-      scale: scale ?? this.scale,
-      positionX: positionX ?? this.positionX,
-      positionY: positionY ?? this.positionY,
     );
   }
 }

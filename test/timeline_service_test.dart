@@ -59,6 +59,29 @@ void main() {
     });
   });
 
+  group('VideoTransform serialization', () {
+    test('keeps supported geometry and ignores retired zoom fields', () {
+      final transform = VideoTransform.fromJson({
+        'crop': {'left': .1, 'top': .2, 'right': .9, 'bottom': .8},
+        'transform': {'rotation': 'clockwise90'},
+        // Older drafts may contain these fields. They are intentionally
+        // ignored because zoom/pan was never implemented in preview/export.
+        'scale': 2.0,
+        'positionX': .3,
+        'positionY': -.2,
+      });
+
+      expect(
+        transform.crop,
+        const CropSettings(left: .1, top: .2, right: .9, bottom: .8),
+      );
+      expect(transform.transform.rotation, Rotation.clockwise90);
+      expect(transform.toJson().containsKey('scale'), isFalse);
+      expect(transform.toJson().containsKey('positionX'), isFalse);
+      expect(transform.toJson().containsKey('positionY'), isFalse);
+    });
+  });
+
   group('Rotation', () {
     test('maps to quarter turns and dimension swapping', () {
       expect(Rotation.none.quarterTurns, 0);
