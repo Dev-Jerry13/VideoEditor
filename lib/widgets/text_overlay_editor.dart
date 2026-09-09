@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../core/constants/app_constants.dart';
@@ -54,6 +55,14 @@ class _TextOverlayEditorState extends State<_TextOverlayEditor> {
     state.setTextEditingSession(true);
     state.selectText(widget.overlayId);
     _textController = TextEditingController(text: _initial?.text ?? '');
+    if (_initial?.text == 'Text') {
+      // A newly inserted label is a placeholder, not text the user should
+      // have to erase before they can start typing.
+      _textController.selection = TextSelection(
+        baseOffset: 0,
+        extentOffset: _textController.text.length,
+      );
+    }
   }
 
   @override
@@ -136,18 +145,42 @@ class _TextOverlayEditorState extends State<_TextOverlayEditor> {
                   ),
                 ),
                 const SizedBox(height: 16),
+                Text(
+                  'Text',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 8),
                 TextField(
                   controller: _textController,
+                  minLines: 2,
                   maxLines: 2,
+                  maxLength: AppConstants.maxTextOverlayCharacters,
+                  maxLengthEnforcement: MaxLengthEnforcement.enforced,
+                  textCapitalization: TextCapitalization.sentences,
+                  keyboardType: TextInputType.multiline,
+                  textInputAction: TextInputAction.newline,
+                  inputFormatters: [
+                    TextInputFormatter.withFunction((oldValue, newValue) {
+                      final lineBreaks = RegExp(r'\r?\n')
+                          .allMatches(newValue.text)
+                          .length;
+                      return lineBreaks <= 1 ? newValue : oldValue;
+                    }),
+                  ],
                   autofocus: overlay.text == 'Text',
                   style: const TextStyle(fontSize: 16),
                   decoration: const InputDecoration(
-                    hintText: 'Enter your text…',
+                    hintText: 'Enter a title or caption',
+                    helperText: 'Up to 2 lines',
                     border: OutlineInputBorder(),
                     isDense: true,
                   ),
                   onChanged: (value) => _update(
                     overlay,
+                    // Keep the model valid while the user clears the field;
+                    // Apply remains unavailable until meaningful text exists.
                     (o) => o.copyWith(text: value.trim().isEmpty ? ' ' : value),
                   ),
                 ),
@@ -288,15 +321,17 @@ class _TextOverlayEditorState extends State<_TextOverlayEditor> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: FilledButton(
-                        onPressed: () {
-                          final snapshot = _baseline;
-                          if (_changed(overlay) && snapshot != null) {
-                            context
-                                .read<EditorState>()
-                                .insertUndoSnapshot(snapshot);
-                          }
-                          Navigator.of(context).pop();
-                        },
+                        onPressed: overlay.text.trim().isEmpty
+                            ? null
+                            : () {
+                                final snapshot = _baseline;
+                                if (_changed(overlay) && snapshot != null) {
+                                  context
+                                      .read<EditorState>()
+                                      .insertUndoSnapshot(snapshot);
+                                }
+                                Navigator.of(context).pop();
+                              },
                         child: const Text('Apply'),
                       ),
                     ),
