@@ -55,6 +55,10 @@ abstract final class AppConstants {
   /// Window given to a freshly inserted overlay, clamped to the timeline.
   static const Duration defaultTextOverlayDuration = Duration(seconds: 4);
 
+  /// Keeps captions readable in the editor and prevents unusually large
+  /// drawtext filter arguments during export.
+  static const int maxTextOverlayCharacters = 160;
+
   // -- Phase 3: audio ------------------------------------------------------------
 
   static const double maxAudioVolume = 1.0;
